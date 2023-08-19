@@ -44,6 +44,7 @@ import "unsafe"
 //
 // Don't split the stack as this function may be invoked without a valid G,
 // which prevents us from allocating more stack.
+// 直接从操作系统获取内存，申请的内存必须是系统页表长度的整数倍。可以通过 sysFree 来释放。
 //
 //go:nosplit
 func sysAlloc(n uintptr, sysStat *sysMemStat) unsafe.Pointer {
@@ -95,6 +96,8 @@ func sysHugePage(v unsafe.Pointer, n uintptr) {
 //
 // Don't split the stack as this function may be invoked without a valid G,
 // which prevents us from allocating more stack.
+//
+// 释放 sysAlloc 申请的内存
 //
 //go:nosplit
 func sysFree(v unsafe.Pointer, n uintptr, sysStat *sysMemStat) {

@@ -1385,6 +1385,9 @@ var persistentChunks *notInHeap
 // The returned memory will be zeroed.
 // sysStat must be non-nil.
 //
+// 将多个小的内存申请合并在一起为一个大的 sysAlloc 以避免内存碎片（fragmentation）。
+// 然而，通过 persistentalloc 申请的内存是无法被释放的。
+//
 // Consider marking persistentalloc'd types not in heap by embedding
 // runtime/internal/sys.NotInHeap.
 func persistentalloc(size, align uintptr, sysStat *sysMemStat) unsafe.Pointer {

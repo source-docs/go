@@ -21,6 +21,8 @@ func add(p unsafe.Pointer, x uintptr) unsafe.Pointer {
 // getg returns the pointer to the current g.
 // The compiler rewrites calls to this function into instructions
 // that fetch the g directly (from TLS or from the dedicated register).
+// 返回当前的 g，但是当正在系统栈或者 signal 栈上执行的时候，会返回的是当前 M 的 g0 或者 gsignal
+// 从线程本地存储 TLS 中读取，既 g.m.tls[0]
 func getg() *g
 
 // mcall switches from the g to the g0 stack and invokes fn(g),
@@ -37,6 +39,10 @@ func getg() *g
 // This must NOT be go:noescape: if fn is a stack-allocated closure,
 // fn puts g on a run queue, and g executes before fn returns, the
 // closure will be invalidated while it is still executing.
+// 保存当前协程的执行现场，并切换到协程g0继续执行
+// 切换到协程g0后会根据切换原因的不同执行不同的函数，
+// 例如，如果是用户调用Gosched函数则主动让渡执行权，执行gosched_m函数，
+// 如果协程已经退出，则执行goexit函数，将协程g放入p的freeg队列，方便下次重用。
 func mcall(fn func(*g))
 
 // systemstack runs fn on a system stack.
@@ -230,6 +236,7 @@ func noescape(p unsafe.Pointer) unsafe.Pointer {
 // pointer-declared arguments.
 func cgocallback(fn, frame, ctxt uintptr)
 
+// 与操作系统有关的函数，用于完成栈的切换及CPU寄存器的恢复。
 func gogo(buf *gobuf)
 
 func asminit()

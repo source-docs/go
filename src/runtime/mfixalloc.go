@@ -26,6 +26,10 @@ import (
 // Callers can keep state in the object but the first word is
 // smashed by freeing and reallocating.
 //
+// 一个 SLAB风格的内存分配器，分配固定大小的内存。
+// 通过 fixalloc 分配的对象可以被释放，但是内存仅可以被相同的 fixalloc 池所重用。
+// 所以 fixalloc 适合用于相同类型的对象。
+//
 // Consider marking fixalloc'd types not in heap by embedding
 // runtime/internal/sys.NotInHeap.
 type fixalloc struct {

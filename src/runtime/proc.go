@@ -142,6 +142,7 @@ var runtimeInitTime int64
 var initSigmask sigset
 
 // The main goroutine.
+// 启动入口
 func main() {
 	mp := getg().m
 
@@ -361,6 +362,7 @@ func goschedIfBusy() {
 // Reason explains why the goroutine has been parked. It is displayed in stack
 // traces and heap dumps. Reasons should be unique and descriptive. Do not
 // re-use reasons, add new ones.
+// 挂起当前的 goroutine—— 把它变成 waiting 状态，并从调度器的运行队列中移除
 func gopark(unlockf func(*g, unsafe.Pointer) bool, lock unsafe.Pointer, reason waitReason, traceEv byte, traceskip int) {
 	if reason != waitReasonSleep {
 		checkTimeouts() // timeouts may expire while two goroutines keep the scheduler busy
@@ -387,6 +389,7 @@ func goparkunlock(lock *mutex, reason waitReason, traceEv byte, traceskip int) {
 	gopark(parkunlock_c, unsafe.Pointer(lock), reason, traceEv, traceskip)
 }
 
+// 将一个被挂起的 goroutine 恢复到 runnable 状态并将它放到运行队列中。
 func goready(gp *g, traceskip int) {
 	systemstack(func() {
 		ready(gp, traceskip, true)
@@ -2641,6 +2644,7 @@ func gcstopm() {
 //
 // Write barriers are allowed because this is called immediately after
 // acquiring a P in several places.
+// 执行一些具体的状态转移、协程g与结构体m之间的绑定等操作
 //
 //go:yeswritebarrierrec
 func execute(gp *g, inheritTime bool) {
@@ -3345,6 +3349,7 @@ func injectglist(glist *gList) {
 }
 
 // One round of scheduler: find a runnable goroutine and execute it.
+// 处理具体的调度策略，选择下一个要执行的协程
 // Never returns.
 func schedule() {
 	mp := getg().m
@@ -3423,6 +3428,7 @@ top:
 // appropriate time. After calling dropg and arranging for gp to be
 // readied later, the caller can do other work but eventually should
 // call schedule to restart the scheduling of goroutines on this m.
+// 解绑 m 和当前执行的 g
 func dropg() {
 	gp := getg()
 
@@ -3535,9 +3541,12 @@ func goschedImpl(gp *g) {
 		dumpgstatus(gp)
 		throw("bad g status")
 	}
+	// 将 g 状态由 _Grunning 改成 _Grunnable
 	casgstatus(gp, _Grunning, _Grunnable)
+	// 解绑 m 和当前执行的 g
 	dropg()
 	lock(&sched.lock)
+	// 放到全局队列里面
 	globrunqput(gp)
 	unlock(&sched.lock)
 
@@ -3545,6 +3554,7 @@ func goschedImpl(gp *g) {
 }
 
 // Gosched continuation on g0.
+// Gosched 的 g0 栈部分逻辑
 func gosched_m(gp *g) {
 	if trace.enabled {
 		traceGoSched()
@@ -4402,6 +4412,7 @@ func saveAncestors(callergp *g) *[]ancestorInfo {
 
 // Put on gfree list.
 // If local list is too long, transfer a batch to the global list.
+// 将 g 加入到 p 的本地缓存队列，如果本地队列太长(>64)，会 copy 32 个到全局
 func gfput(pp *p, gp *g) {
 	if readgstatus(gp) != _Gdead {
 		throw("gfput: bad status (not Gdead)")

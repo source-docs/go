@@ -12,6 +12,7 @@
 // internal linking. This is the entry point for the program from the
 // kernel for an ordinary -buildmode=exe program. The stack holds the
 // number of arguments and the C-style argv.
+// 启动入口，，各平台 x64 入口 asm 会统一跳转过来
 TEXT _rt0_amd64(SB),NOSPLIT,$-8
 	MOVQ	0(SP), DI	// argc
 	LEAQ	8(SP), SI	// argv
@@ -158,6 +159,7 @@ GLOBL bad_cpu_msg<>(SB), RODATA, $84
 
 TEXT runtime·rt0_go(SB),NOSPLIT|TOPFRAME,$0
 	// copy arguments forward on an even stack
+	// 复制参数数量argc和参数值argv到栈上
 	MOVQ	DI, AX		// argc
 	MOVQ	SI, BX		// argv
 	SUBQ	$(5*8), SP		// 3args 2auto
@@ -165,6 +167,7 @@ TEXT runtime·rt0_go(SB),NOSPLIT|TOPFRAME,$0
 	MOVQ	AX, 24(SP)
 	MOVQ	BX, 32(SP)
 
+	// 初始化 g0 执行栈
 	// create istack out of the given (operating system) stack.
 	// _cgo_init may update stackguard.
 	MOVQ	$runtime·g0(SB), DI
