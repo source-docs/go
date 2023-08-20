@@ -341,12 +341,16 @@ ok:
 	JNE	bad_cpu
 #endif
 
+    // runtime/runtime1.go:142 check()
+    // 进行各种检查，包括类型的长度Sizeof、结构体字段的偏移量、CAS操作、NAN检查、原子操作、汇编指令、栈大小检查等
 	CALL	runtime·check(SB)
 
 	MOVL	24(SP), AX		// copy argc
 	MOVL	AX, 0(SP)
 	MOVQ	32(SP), AX		// copy argv
 	MOVQ	AX, 8(SP)
+	// func args(c int32, v **byte) runtime/runtime1.go:66
+	// 进行命令行参数的初始化
 	CALL	runtime·args(SB)
 	CALL	runtime·osinit(SB)
 	CALL	runtime·schedinit(SB)

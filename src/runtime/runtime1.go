@@ -57,6 +57,7 @@ var (
 )
 
 // nosplit for use in linux startup sysargs.
+// 取第 n 个 argv
 //
 //go:nosplit
 func argv_index(argv **byte, i int32) *byte {
@@ -165,6 +166,7 @@ func check() {
 	var x1 x1t
 	var y1 y1t
 
+	// 类型的长度 Sizeof 检查
 	if unsafe.Sizeof(a) != 1 {
 		throw("bad a")
 	}
@@ -204,6 +206,8 @@ func check() {
 	if unsafe.Sizeof(x1) != 1 {
 		throw("bad unsafe.Sizeof x1")
 	}
+
+	// 结构体字段的偏移量 检查
 	if unsafe.Offsetof(y1.y) != 1 {
 		throw("bad offsetof y1.y")
 	}
@@ -215,6 +219,7 @@ func check() {
 		throw("bad timediv")
 	}
 
+	// cas 检查
 	var z uint32
 	z = 1
 	if !atomic.Cas(&z, 1, 2) {
@@ -252,6 +257,7 @@ func check() {
 		throw("atomicand8")
 	}
 
+	// 检查 nan
 	*(*uint64)(unsafe.Pointer(&j)) = ^uint64(0)
 	if j == j {
 		throw("float64nan")
