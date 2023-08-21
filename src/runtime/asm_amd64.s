@@ -352,7 +352,11 @@ ok:
 	// func args(c int32, v **byte) runtime/runtime1.go:66
 	// 进行命令行参数的初始化
 	CALL	runtime·args(SB)
+	// runtime/os_linux.go/osinit()
+	// 读取操作系统的CPU核数
 	CALL	runtime·osinit(SB)
+	// runtime/proc.go/schedinit()
+	// 调度器的初始化，涉及内存空间的初始化、命令行参数的初始化、 垃圾收集器参数的初始化、调度器process的设置等
 	CALL	runtime·schedinit(SB)
 
 	// create a new goroutine to start program

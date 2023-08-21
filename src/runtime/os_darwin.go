@@ -447,6 +447,7 @@ func validSIGPROF(mp *m, c *sigctxt) bool {
 //go:linkname executablePath os.executablePath
 var executablePath string
 
+// 从 argv 中解析出 executablePath
 func sysargs(argc int32, argv **byte) {
 	// skip over argv, envv and the first string will be the path
 	n := argc + 1

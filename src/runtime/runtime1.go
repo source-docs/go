@@ -57,7 +57,7 @@ var (
 )
 
 // nosplit for use in linux startup sysargs.
-// 取第 n 个 argv
+// 取第 i 个 argv
 //
 //go:nosplit
 func argv_index(argv **byte, i int32) *byte {

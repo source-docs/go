@@ -677,6 +677,7 @@ func getGodebugEarly() string {
 //	call runtime·mstart
 //
 // The new G calls runtime·main.
+// 调度器的初始化
 func schedinit() {
 	lockInit(&sched.lock, lockRankSched)
 	lockInit(&sched.sysmonlock, lockRankSysmon)

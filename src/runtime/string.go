@@ -556,6 +556,8 @@ func findnullw(s *uint16) int {
 	return l
 }
 
+// []byte 转 string,
+//
 //go:nosplit
 func gostringnocopy(str *byte) string {
 	ss := stringStruct{str: unsafe.Pointer(str), len: findnull(str)}
