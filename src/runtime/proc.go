@@ -712,13 +712,17 @@ func schedinit() {
 	worldStopped()
 
 	moduledataverify()
+	// 栈缓存初始化
 	stackinit()
+	// 堆内存分配器初始化
 	mallocinit()
 	godebug := getGodebugEarly()
 	initPageTrace(godebug) // must run after mallocinit but before anything allocates
-	cpuinit(godebug)       // must run before alginit
-	alginit()              // maps, hash, fastrand must not be used before this call
-	fastrandinit()         // must run before mcommoninit
+	// cpu 信息
+	cpuinit(godebug) // must run before alginit
+	// cpu aes 随机数算法支持
+	alginit()      // maps, hash, fastrand must not be used before this call
+	fastrandinit() // must run before mcommoninit
 	mcommoninit(gp.m, -1)
 	modulesinit()   // provides activeModules
 	typelinksinit() // uses maps, activeModules

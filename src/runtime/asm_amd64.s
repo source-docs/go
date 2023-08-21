@@ -167,7 +167,7 @@ TEXT runtime·rt0_go(SB),NOSPLIT|TOPFRAME,$0
 	MOVQ	AX, 24(SP)
 	MOVQ	BX, 32(SP)
 
-	// 初始化 g0 执行栈
+	// 初始化 g0 执行栈， g0 调用栈 64k
 	// create istack out of the given (operating system) stack.
 	// _cgo_init may update stackguard.
 	MOVQ	$runtime·g0(SB), DI
@@ -178,6 +178,7 @@ TEXT runtime·rt0_go(SB),NOSPLIT|TOPFRAME,$0
 	MOVQ	SP, (g_stack+stack_hi)(DI)
 
 	// find out information about the processor we're on
+	// 读取 cpu 信息
 	MOVL	$0, AX
 	CPUID
 	CMPL	AX, $0
@@ -199,6 +200,7 @@ notintel:
 
 nocpuinfo:
 	// if there is an _cgo_init, call it.
+	// runtime/cgo/gcc_linux_amd64.c:19
 	MOVQ	_cgo_init(SB), AX
 	TESTQ	AX, AX
 	JZ	needtls
@@ -258,10 +260,16 @@ needtls:
 	CALL	runtime·wintls(SB)
 #endif
 
+    // 将runtime·m0.tls地址存入DI寄存器
 	LEAQ	runtime·m0+m_tls(SB), DI
+	// runtime/sys_linux_amd64.s:633
+	// 设置 tls，将 DI 的地址设置入 tls,
+	// tls = m0.tls
 	CALL	runtime·settls(SB)
 
 	// store through it, to make sure it works
+	// runtime/go_tls.h:10
+	// MOVQ TLS, BX
 	get_tls(BX)
 	MOVQ	$0x123, g(BX)
 	MOVQ	runtime·m0+m_tls(SB), AX
@@ -270,8 +278,10 @@ needtls:
 	CALL	runtime·abort(SB)
 ok:
 	// set the per-goroutine and per-mach "registers"
+	// MOVQ TLS, BX
 	get_tls(BX)
 	LEAQ	runtime·g0(SB), CX
+	// TLS = runtime·g0
 	MOVQ	CX, g(BX)
 	LEAQ	runtime·m0(SB), AX
 
