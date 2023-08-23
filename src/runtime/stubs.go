@@ -62,6 +62,11 @@ func mcall(fn func(*g))
 //	})
 //	... use x ...
 //
+// 如果是 g0 调用，会直接调用
+// 如果送普通 g 调用，会切换到 g0 的栈，然后用 g0 的栈调用
+// 调用完毕会切换回来
+// 实现： runtime/asm_amd64.s:495
+//
 //go:noescape
 func systemstack(fn func())
 
@@ -345,6 +350,7 @@ func publicationBarrier()
 // that might relocate the stack in order to grow or shrink it.
 // A general rule is that the result of getcallersp should be used
 // immediately and can only be passed to nosplit functions.
+// 获取调用方的 PC 寄存器的地址
 
 //go:noescape
 func getcallerpc() uintptr

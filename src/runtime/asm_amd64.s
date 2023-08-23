@@ -260,6 +260,8 @@ needtls:
 	CALL	runtime·wintls(SB)
 #endif
 
+    // 将 m0.tls 的地址设置入 FS 寄存器
+
     // 将runtime·m0.tls地址存入DI寄存器
 	LEAQ	runtime·m0+m_tls(SB), DI
 	// runtime/sys_linux_amd64.s:633
@@ -370,8 +372,14 @@ ok:
 	CALL	runtime·schedinit(SB)
 
 	// create a new goroutine to start program
+	// runtime/asm_amd64.s:405
+	// runtime·main (runtime/proc.go:146) 方法的地址被保存到只读符号 （runtime·mainPC） 里面了，
+	// 这里将这个函数的值压到了栈里面
+	// 压到栈里面后，newproc 会获取 pc 寄存器地址，然后传递给新的 g,
+	// g 就会以为是从 runtime·main 跳转过来的, 执行完毕会返回到 runtime·main 里面
 	MOVQ	$runtime·mainPC(SB), AX		// entry
 	PUSHQ	AX
+	// 调用 runtime·newproc 函数 runtime/proc.go:4274
 	CALL	runtime·newproc(SB)
 	POPQ	AX
 
@@ -483,20 +491,23 @@ goodm:
 TEXT runtime·systemstack_switch(SB), NOSPLIT, $0-0
 	RET
 
-// func systemstack(fn func())
+// func systemstack(fn func()) (runtime/stubs.go:70)
 TEXT runtime·systemstack(SB), NOSPLIT, $0-8
 	MOVQ	fn+0(FP), DI	// DI = fn
 	get_tls(CX)
 	MOVQ	g(CX), AX	// AX = g
-	MOVQ	g_m(AX), BX	// BX = m
+	MOVQ	g_m(AX), BX	// BX = g.m
 
+    // 如果是 信号处理的 g 不切换
 	CMPQ	AX, m_gsignal(BX)
 	JEQ	noswitch
 
+	// 如果是 g0 不切换
 	MOVQ	m_g0(BX), DX	// DX = g0
 	CMPQ	AX, DX
 	JEQ	noswitch
 
+	// 如果 m.tls[0] 里面存储的 g 既不是 g0, 也不是 gsignal，也不是 m 当前运行的 g, 说明程序出问题了
 	CMPQ	AX, m_curg(BX)
 	JNE	bad
 
@@ -506,8 +517,9 @@ TEXT runtime·systemstack(SB), NOSPLIT, $0-8
 	CALL	gosave_systemstack_switch<>(SB)
 
 	// switch to g0
-	MOVQ	DX, g(CX)
+	MOVQ	DX, g(CX) // 将 g0 赋值到 m.tls[0], 既 FS 寄存器
 	MOVQ	DX, R14 // set the g register
+	// 将 g0.sched.sp 取出来，设置到 SP 寄存器，完成栈切换
 	MOVQ	(g_sched+gobuf_sp)(DX), BX
 	MOVQ	BX, SP
 
@@ -518,12 +530,12 @@ TEXT runtime·systemstack(SB), NOSPLIT, $0-8
 
 	// switch back to g
 	get_tls(CX)
-	MOVQ	g(CX), AX
-	MOVQ	g_m(AX), BX
-	MOVQ	m_curg(BX), AX
-	MOVQ	AX, g(CX)
-	MOVQ	(g_sched+gobuf_sp)(AX), SP
-	MOVQ	$0, (g_sched+gobuf_sp)(AX)
+	MOVQ	g(CX), AX // AX = TLS[0] = m.tls[0] (值为g0)
+	MOVQ	g_m(AX), BX // BX = g0.m
+	MOVQ	m_curg(BX), AX // AX = g0.m.curg
+	MOVQ	AX, g(CX) //  m.tls[0] = TLS[0] = g0.m.curg
+	MOVQ	(g_sched+gobuf_sp)(AX), SP // 将 g 的栈恢复到 SP 寄存器
+	MOVQ	$0, (g_sched+gobuf_sp)(AX) // 清空 g.sched.sp
 	RET
 
 noswitch:
@@ -795,14 +807,14 @@ TEXT ·publicationBarrier(SB),NOSPLIT,$0-0
 // Smashes R9.
 TEXT gosave_systemstack_switch<>(SB),NOSPLIT,$0
 	MOVQ	$runtime·systemstack_switch(SB), R9
-	MOVQ	R9, (g_sched+gobuf_pc)(R14)
+	MOVQ	R9, (g_sched+gobuf_pc)(R14) // g.sched.pc = &runtime·systemstack_switch
 	LEAQ	8(SP), R9
-	MOVQ	R9, (g_sched+gobuf_sp)(R14)
-	MOVQ	$0, (g_sched+gobuf_ret)(R14)
-	MOVQ	BP, (g_sched+gobuf_bp)(R14)
+	MOVQ	R9, (g_sched+gobuf_sp)(R14) // g.sched.sp = SP - 8
+	MOVQ	$0, (g_sched+gobuf_ret)(R14) // g.sched.ret = 0
+	MOVQ	BP, (g_sched+gobuf_bp)(R14) g.sched.bp = BP
 	// Assert ctxt is zero. See func save.
 	MOVQ	(g_sched+gobuf_ctxt)(R14), R9
-	TESTQ	R9, R9
+	TESTQ	R9, R9 // if (g.sched.ctxt == 0) 往下跳两个指令
 	JZ	2(PC)
 	CALL	runtime·abort(SB)
 	RET
