@@ -205,6 +205,8 @@ nocpuinfo:
 	TESTQ	AX, AX
 	JZ	needtls
 	// arg 1: g0, already in DI
+	// runtime/asm_amd64.s:1087
+	// 将 g 设置到 TLS 和 R14 寄存器
 	MOVQ	$setg_gcc<>(SB), SI // arg 2: setg_gcc
 	MOVQ	$0, DX	// arg 3, 4: not used when using platform's TLS
 	MOVQ	$0, CX
@@ -222,10 +224,11 @@ nocpuinfo:
 	MOVQ	SI, DX // arg 2
 	MOVQ	DI, CX // arg 1
 #endif
+    // _cgo_init runtime/cgo/gcc_linux_amd64.c:19
 	CALL	AX
 
 	// update stackguard after _cgo_init
-	MOVQ	$runtime·g0(SB), CX
+	MOVQ	$runtime·g0(SB), CX  // runtime/proc.go:115
 	MOVQ	(g_stack+stack_lo)(CX), AX
 	ADDQ	$const__StackGuard, AX
 	MOVQ	AX, g_stackguard0(CX)
@@ -374,12 +377,9 @@ ok:
 	// create a new goroutine to start program
 	// runtime/asm_amd64.s:405
 	// runtime·main (runtime/proc.go:146) 方法的地址被保存到只读符号 （runtime·mainPC） 里面了，
-	// 这里将这个函数的值压到了栈里面
-	// 压到栈里面后，newproc 会获取 pc 寄存器地址，然后传递给新的 g,
-	// g 就会以为是从 runtime·main 跳转过来的, 执行完毕会返回到 runtime·main 里面
 	MOVQ	$runtime·mainPC(SB), AX		// entry
 	PUSHQ	AX
-	// 调用 runtime·newproc 函数 runtime/proc.go:4274
+	// 调用 runtime·newproc 函数 runtime/proc.go:4274 参数为  runtime·main
 	CALL	runtime·newproc(SB)
 	POPQ	AX
 
@@ -1086,8 +1086,8 @@ TEXT runtime·setg(SB), NOSPLIT, $0-8
 // void setg_gcc(G*); set g called from gcc.
 TEXT setg_gcc<>(SB),NOSPLIT,$0
 	get_tls(AX)
-	MOVQ	DI, g(AX)
-	MOVQ	DI, R14 // set the g register
+	MOVQ	DI, g(AX) // TLS = &g
+	MOVQ	DI, R14 // set the g register R14 = g
 	RET
 
 TEXT runtime·abort(SB),NOSPLIT,$0-0

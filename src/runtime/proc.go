@@ -526,6 +526,8 @@ var (
 	// Access via the slice is protected by allglock or stop-the-world.
 	// Readers that cannot take the lock may (carefully!) use the atomic
 	// variables below.
+	// allgs 不会收缩。。。如果因为下游超时开了很多 g, 因为之前的 g 还在跑，每复用，这里会越来越大
+	// 每次 gc、sysmon、死锁检查期间都会进行全局扫描
 	allglock mutex
 	allgs    []*g
 
@@ -4297,7 +4299,7 @@ func newproc1(fn *funcval, callergp *g, callerpc uintptr) *g {
 	mp := acquirem() // disable preemption because we hold M and P in local vars.
 	pp := mp.p.ptr()
 	newg := gfget(pp)
-	if newg == nil {
+	if newg == nil { // 从本地和全局 g 里面取不到，新建一个
 		newg = malg(_StackMin)
 		casgstatus(newg, _Gidle, _Gdead)
 		allgadd(newg) // publishes with a g->status of Gdead so GC scanner doesn't look at uninitialized stack.
@@ -4464,6 +4466,7 @@ func gfput(pp *p, gp *g) {
 func gfget(pp *p) *g {
 retry:
 	if pp.gFree.empty() && (!sched.gFree.stack.empty() || !sched.gFree.noStack.empty()) {
+		// p 本地 fFree 空了。但是全局 gFree 还有，从全局 gFree 取 32 个
 		lock(&sched.gFree.lock)
 		// Move a batch of free Gs to the P.
 		for pp.gFree.n < 32 {
@@ -4480,13 +4483,14 @@ retry:
 			pp.gFree.n++
 		}
 		unlock(&sched.gFree.lock)
-		goto retry
+		goto retry // 没取到重试一次
 	}
 	gp := pp.gFree.pop()
 	if gp == nil {
-		return nil
+		return nil // 没取到返回
 	}
 	pp.gFree.n--
+	// 如果不等于设定的 g 开始栈大小, 先切换到 g0 栈，，然后释放栈
 	if gp.stack.lo != 0 && gp.stack.hi-gp.stack.lo != uintptr(startingStackSize) {
 		// Deallocate old stack. We kept it in gfput because it was the
 		// right size when the goroutine was put on the free list, but
