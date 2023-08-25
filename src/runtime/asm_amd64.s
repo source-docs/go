@@ -380,10 +380,13 @@ ok:
 	MOVQ	$runtime·mainPC(SB), AX		// entry
 	PUSHQ	AX
 	// 调用 runtime·newproc 函数 runtime/proc.go:4274 参数为  runtime·main
+	// 该函数创建一个 g, 运行 runtime·main 方法
 	CALL	runtime·newproc(SB)
 	POPQ	AX
 
 	// start this M
+	// 调用 runtime/asm_amd64.s:425
+	// 启动 m
 	CALL	runtime·mstart(SB)
 
 	CALL	runtime·abort(SB)	// mstart should never return
@@ -419,8 +422,8 @@ TEXT runtime·asminit(SB),NOSPLIT,$0-0
 	// No per-thread init.
 	RET
 
-TEXT runtime·mstart(SB),NOSPLIT|TOPFRAME,$0
-	CALL	runtime·mstart0(SB)
+TEXT runtime·mstart(SB),NOSPLIT|TOPFRAME,$0 // 启动 m0
+	CALL	runtime·mstart0(SB) // runtime/proc.go:1440
 	RET // not reached
 
 /*

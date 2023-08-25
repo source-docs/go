@@ -1049,6 +1049,7 @@ func tracebackHexdump(stk stack, frame *stkframe, bad uintptr) {
 // If fixed is true, any goroutine that can vary between user and
 // system (that is, the finalizer goroutine) is considered a user
 // goroutine.
+// 判断是否是系统 g
 func isSystemGoroutine(gp *g, fixed bool) bool {
 	// Keep this in sync with internal/trace.IsSystemGoroutine.
 	f := findfunc(gp.startpc)

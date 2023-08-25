@@ -457,7 +457,7 @@ type g struct {
 	atomicstatus atomic.Uint32
 	stackLock    uint32 // sigprof/scang lock; TODO: fold in to atomicstatus
 	goid         uint64
-	schedlink    guintptr
+	schedlink    guintptr   // 在全局 g 队列里面，这里用来链接队列里面下一个 g
 	waitsince    int64      // approx time when the g become blocked
 	waitreason   waitReason // if status==Gwaiting
 
@@ -653,6 +653,7 @@ type p struct {
 	goidcacheend uint64
 
 	// Queue of runnable goroutines. Accessed without lock.
+	// 本地可运行 g 的队列
 	runqhead uint32
 	runqtail uint32
 	runq     [256]guintptr

@@ -1435,13 +1435,15 @@ func mstart()
 // May run during STW (because it doesn't have a P yet), so write
 // barriers are not allowed.
 //
+// m 启动入口点
+//
 //go:nosplit
 //go:nowritebarrierrec
 func mstart0() {
-	gp := getg()
+	gp := getg() // 此时为 g0
 
 	osStack := gp.stack.lo == 0
-	if osStack {
+	if osStack { //
 		// Initialize stack bounds from system stack.
 		// Cgo may have left stack size in stack.hi.
 		// minit may update the stack bounds.
@@ -4323,13 +4325,15 @@ func newproc1(fn *funcval, callergp *g, callerpc uintptr) *g {
 		spArg += sys.MinFrameSize
 	}
 
+	// 将 newg.sched 内存区域置为 0
 	memclrNoHeapPointers(unsafe.Pointer(&newg.sched), unsafe.Sizeof(newg.sched))
 	newg.sched.sp = sp
 	newg.stktopsp = sp
+	// 协程开始运行的地方
 	newg.sched.pc = abi.FuncPCABI0(goexit) + sys.PCQuantum // +PCQuantum so that previous instruction is in same function
 	newg.sched.g = guintptr(unsafe.Pointer(newg))
 	gostartcallfn(&newg.sched, fn)
-	newg.gopc = callerpc
+	newg.gopc = callerpc // 创建 g 的语句的 pc
 	newg.ancestors = saveAncestors(callergp)
 	newg.startpc = fn.fn
 	if isSystemGoroutine(newg, false) {
@@ -4356,7 +4360,7 @@ func newproc1(fn *funcval, callergp *g, callerpc uintptr) *g {
 	casgstatus(newg, _Gdead, _Grunnable)
 	gcController.addScannableStack(pp, int64(newg.stack.hi-newg.stack.lo))
 
-	if pp.goidcache == pp.goidcacheend {
+	if pp.goidcache == pp.goidcacheend { // 如果 gid 缓存没了，从全局 goidgen 申请一批，申请使用原子变量
 		// Sched.goidgen is the last allocated id,
 		// this batch must be [sched.goidgen+1, sched.goidgen+GoidCacheBatch].
 		// At startup sched.goidgen=0, so main goroutine receives goid=1.
@@ -4365,7 +4369,7 @@ func newproc1(fn *funcval, callergp *g, callerpc uintptr) *g {
 		pp.goidcacheend = pp.goidcache + _GoidCacheBatch
 	}
 	newg.goid = pp.goidcache
-	pp.goidcache++
+	pp.goidcache++ // 从 p 本地 gid 缓存里面申请一个
 	if raceenabled {
 		newg.racectx = racegostart(callerpc)
 		newg.raceignore = 0
@@ -5786,7 +5790,7 @@ func globrunqputbatch(batch *gQueue, n int32) {
 
 	sched.runq.pushBackAll(*batch)
 	sched.runqsize += n
-	*batch = gQueue{}
+	*batch = gQueue{} // 清空传入的队列
 }
 
 // Try get a batch of G's from the global runnable queue.
@@ -5998,6 +6002,10 @@ const randomizeScheduler = raceenabled
 // If next is true, runqput puts g in the pp.runnext slot.
 // If the run queue is full, runnext puts g on the global queue.
 // Executed only by the owner P.
+// 将 g 放到 p 的本地 g 队列
+// 设置了 next == true, 会将 g 放到 p 的 runnext 里面，原先 runnext 里面的 g, 放到队列尾部
+// 如果 next == false, 会把 g 放到队列尾部
+// 如果队列满了，会放全局队列
 func runqput(pp *p, gp *g, next bool) {
 	if randomizeScheduler && next && fastrandn(2) == 0 {
 		next = false
@@ -6010,21 +6018,21 @@ func runqput(pp *p, gp *g, next bool) {
 			goto retryNext
 		}
 		if oldnext == 0 {
-			return
+			return // 如果之前 oldnext 里面没有 g, 则放进去后不用进行处理
 		}
 		// Kick the old runnext out to the regular run queue.
-		gp = oldnext.ptr()
+		gp = oldnext.ptr() // 如果 oldnext 里面有一个 g, 把这个 g 放队尾
 	}
 
 retry:
 	h := atomic.LoadAcq(&pp.runqhead) // load-acquire, synchronize with consumers
 	t := pp.runqtail
-	if t-h < uint32(len(pp.runq)) {
+	if t-h < uint32(len(pp.runq)) { // 本地队列充足，把 g 放进去
 		pp.runq[t%uint32(len(pp.runq))].set(gp)
 		atomic.StoreRel(&pp.runqtail, t+1) // store-release, makes the item available for consumption
 		return
 	}
-	if runqputslow(pp, gp, h, t) {
+	if runqputslow(pp, gp, h, t) { // 将本地队列的 一批 g 放到 全局队列
 		return
 	}
 	// the queue is not full, now the put above must succeed
@@ -6035,6 +6043,7 @@ retry:
 // Executed only by the owner P.
 func runqputslow(pp *p, gp *g, h, t uint32) bool {
 	var batch [len(pp.runq)/2 + 1]*g
+	// 将队列的一半和传入的 g 一起放全局队列
 
 	// First, grab a batch from local queue.
 	n := t - h
@@ -6042,15 +6051,15 @@ func runqputslow(pp *p, gp *g, h, t uint32) bool {
 	if n != uint32(len(pp.runq)/2) {
 		throw("runqputslow: queue is not full")
 	}
-	for i := uint32(0); i < n; i++ {
+	for i := uint32(0); i < n; i++ { // 将前半部分的 g 放入
 		batch[i] = pp.runq[(h+i)%uint32(len(pp.runq))].ptr()
 	}
 	if !atomic.CasRel(&pp.runqhead, h, h+n) { // cas-release, commits consume
-		return false
+		return false // cas 地设置队列 head
 	}
-	batch[n] = gp
+	batch[n] = gp // 最后一个放传入的 g
 
-	if randomizeScheduler {
+	if randomizeScheduler { // 如果开启这个配置，随机打乱放入全局 g 队列里面的 g 列表
 		for i := uint32(1); i <= n; i++ {
 			j := fastrandn(i + 1)
 			batch[i], batch[j] = batch[j], batch[i]
@@ -6058,6 +6067,7 @@ func runqputslow(pp *p, gp *g, h, t uint32) bool {
 	}
 
 	// Link the goroutines.
+	// 构建成一个 gQueue 链表
 	for i := uint32(0); i < n; i++ {
 		batch[i].schedlink.set(batch[i+1])
 	}
@@ -6066,6 +6076,7 @@ func runqputslow(pp *p, gp *g, h, t uint32) bool {
 	q.tail.set(batch[n])
 
 	// Now put the batch on global queue.
+	// 上锁，然后拼接到全局 g 队列里面
 	lock(&sched.lock)
 	globrunqputbatch(&q, int32(n+1))
 	unlock(&sched.lock)
