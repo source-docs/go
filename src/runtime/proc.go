@@ -133,6 +133,7 @@ var main_init_done chan bool
 func main_main()
 
 // mainStarted indicates that the main M has started.
+// m0 是否已经启动
 var mainStarted bool
 
 // runtimeInitTime is the nanotime() at which the runtime started.
@@ -708,6 +709,7 @@ func schedinit() {
 		gp.racectx, raceprocctx0 = raceinit()
 	}
 
+	// 最大 M 数量 10000
 	sched.maxmcount = 10000
 
 	// The world starts stopped.
@@ -725,6 +727,7 @@ func schedinit() {
 	// cpu aes 随机数算法支持
 	alginit()      // maps, hash, fastrand must not be used before this call
 	fastrandinit() // must run before mcommoninit
+	// 初始化一下 m0
 	mcommoninit(gp.m, -1)
 	modulesinit()   // provides activeModules
 	typelinksinit() // uses maps, activeModules
@@ -738,6 +741,7 @@ func schedinit() {
 	goenvs()
 	secure()
 	parsedebugvars()
+	// 垃圾回收器初始化
 	gcinit()
 
 	// if disableMemoryProfiling is set, update MemProfileRate to 0 to turn off memprofile.
@@ -754,6 +758,7 @@ func schedinit() {
 	if n, ok := atoi32(gogetenv("GOMAXPROCS")); ok && n > 0 {
 		procs = n
 	}
+	// allp 列表初始化（resize 0 -> procs）
 	if procresize(procs) != nil {
 		throw("unknown runnable goroutine during bootstrap")
 	}
@@ -795,7 +800,7 @@ func dumpgstatus(gp *g) {
 func checkmcount() {
 	assertLockHeld(&sched.lock)
 
-	if mcount() > sched.maxmcount {
+	if mcount() > sched.maxmcount { // 超出最大 m 数量限制
 		print("runtime: program exceeds ", sched.maxmcount, "-thread limit\n")
 		throw("thread exhaustion")
 	}
@@ -805,10 +810,11 @@ func checkmcount() {
 // considered 'running' by checkdead.
 //
 // sched.lock must be held.
+// 分配一个 m 的 id
 func mReserveID() int64 {
 	assertLockHeld(&sched.lock)
 
-	if sched.mnext+1 < sched.mnext {
+	if sched.mnext+1 < sched.mnext { // mid 溢出
 		throw("runtime: thread ID overflow")
 	}
 	id := sched.mnext
@@ -818,6 +824,7 @@ func mReserveID() int64 {
 }
 
 // Pre-allocated ID may be passed as 'id', or omitted by passing -1.
+// 初始化了一下 m 的 id，fastrand， 创建用于信号处理的gsigna, 只是创建了 g 结构体和分配了一下栈， 将 m 放入 allm 链表了
 func mcommoninit(mp *m, id int64) {
 	gp := getg()
 
@@ -828,12 +835,13 @@ func mcommoninit(mp *m, id int64) {
 
 	lock(&sched.lock)
 
-	if id >= 0 {
+	if id >= 0 { // 指定 id
 		mp.id = id
-	} else {
+	} else { // 预分配 id
 		mp.id = mReserveID()
 	}
 
+	// fastrand 初始化，用于窃取 G
 	lo := uint32(int64Hash(uint64(mp.id), fastrandseed))
 	hi := uint32(int64Hash(uint64(cputicks()), ^fastrandseed))
 	if lo|hi == 0 {
@@ -847,6 +855,7 @@ func mcommoninit(mp *m, id int64) {
 		mp.fastrand = uint64(hi)<<32 | uint64(lo)
 	}
 
+	// 创建用于信号处理的gsigna, 只是创建了 g 结构体和分配了一下栈
 	mpreinit(mp)
 	if mp.gsignal != nil {
 		mp.gsignal.stackguard1 = mp.gsignal.stack.lo + _StackGuard
@@ -858,6 +867,7 @@ func mcommoninit(mp *m, id int64) {
 
 	// NumCgoCall() iterates over allm w/o schedlock,
 	// so we need to publish it safely.
+	// allm = mp 链表头插
 	atomicstorep(unsafe.Pointer(&allm), unsafe.Pointer(mp))
 	unlock(&sched.lock)
 
@@ -1461,6 +1471,7 @@ func mstart0() {
 	}
 	// Initialize stack guard so that we can start calling regular
 	// Go code.
+	// 初始化 g 的栈边界
 	gp.stackguard0 = gp.stack.lo + _StackGuard
 	// This is the g0, so we can also call go:systemstack
 	// functions, which check stackguard1.
@@ -1494,8 +1505,11 @@ func mstart1() {
 	// so other calls can reuse the current frame.
 	// And goexit0 does a gogo that needs to return from mstart1
 	// and let mstart0 exit the thread.
+	// 用户代码执行完之后，返回 g0
 	gp.sched.g = guintptr(unsafe.Pointer(gp))
+	// 用户代码执行完之后，从调用该方法的地方开始继续执行
 	gp.sched.pc = getcallerpc()
+	// 保留上一级的栈指针
 	gp.sched.sp = getcallersp()
 
 	asminit()
@@ -4256,6 +4270,7 @@ func syscall_runtime_AfterExec() {
 }
 
 // Allocate a new g, with a stack big enough for stacksize bytes.
+// 创建一个 g, 并且分配 stacksize 的栈空间
 func malg(stacksize int32) *g {
 	newg := new(g)
 	if stacksize >= 0 {
@@ -4858,10 +4873,10 @@ func setcpuprofilerate(hz int32) {
 func (pp *p) init(id int32) {
 	pp.id = id
 	pp.status = _Pgcstop
-	pp.sudogcache = pp.sudogbuf[:0]
+	pp.sudogcache = pp.sudogbuf[:0] // Channel
 	pp.deferpool = pp.deferpoolbuf[:0]
 	pp.wbBuf.reset()
-	if pp.mcache == nil {
+	if pp.mcache == nil { // 能快速的进行分配微对象和小对象的分配
 		if id == 0 {
 			if mcache0 == nil {
 				throw("missing mcache?")
@@ -4985,6 +5000,7 @@ func (pp *p) destroy() {
 // code, so the GC must not be running if the number of Ps actually changes.
 //
 // Returns list of Ps with local work, they need to be scheduled by the caller.
+// 重新设置 allp 的大小
 func procresize(nprocs int32) *p {
 	assertLockHeld(&sched.lock)
 	assertWorldStopped()
@@ -5007,13 +5023,16 @@ func procresize(nprocs int32) *p {
 	maskWords := (nprocs + 31) / 32
 
 	// Grow allp if necessary.
+	// 目标 p 数量比 allp 长，扩容
 	if nprocs > int32(len(allp)) {
 		// Synchronize with retake, which could be running
 		// concurrently since it doesn't run on a P.
 		lock(&allpLock)
+		// 如果容量足够，直接截取
 		if nprocs <= int32(cap(allp)) {
-			allp = allp[:nprocs]
+			allp = allp[:nprocs] // 如果是大于了，，缩容一下
 		} else {
+			// 如果不够，扩容一下
 			nallp := make([]*p, nprocs)
 			// Copy everything up to allp's cap so we
 			// never lose old allocated Ps.
@@ -5021,10 +5040,11 @@ func procresize(nprocs int32) *p {
 			allp = nallp
 		}
 
+		// 如果 idlepMask 容量足够，直接截取对应长度
 		if maskWords <= int32(cap(idlepMask)) {
 			idlepMask = idlepMask[:maskWords]
 			timerpMask = timerpMask[:maskWords]
-		} else {
+		} else { // 如果 idlepMask 不够用了，扩容
 			nidlepMask := make([]uint32, maskWords)
 			// No need to copy beyond len, old Ps are irrelevant.
 			copy(nidlepMask, idlepMask)
@@ -5040,16 +5060,19 @@ func procresize(nprocs int32) *p {
 	// initialize new P's
 	for i := old; i < nprocs; i++ {
 		pp := allp[i]
-		if pp == nil {
+		if pp == nil { // 如果对应的地方送空的，新建一个p
 			pp = new(p)
 		}
+		// 初始化 p, id 使用 allp 的下标
 		pp.init(i)
+		// 让其他线程可见
 		atomicstorep(unsafe.Pointer(&allp[i]), unsafe.Pointer(pp))
 	}
 
 	gp := getg()
 	if gp.m.p != 0 && gp.m.p.ptr().id < nprocs {
 		// continue to use the current P
+		// 当前 m 已经有 p 了，并且 p 在 allp 范围内，继续使用这个 p
 		gp.m.p.ptr().status = _Prunning
 		gp.m.p.ptr().mcache.prepareForSweep()
 	} else {
@@ -5146,6 +5169,8 @@ func acquirep(pp *p) {
 // wirep is the first step of acquirep, which actually associates the
 // current M to pp. This is broken out so we can disallow write
 // barriers for this part, since we don't yet have a P.
+//
+// 将当前的 m 和 pp 关联起来
 //
 //go:nowritebarrierrec
 //go:nosplit

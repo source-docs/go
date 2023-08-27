@@ -120,6 +120,7 @@ const (
 	//
 	// The P is owned by the idle list or by whatever is
 	// transitioning its state. Its run queue is empty.
+	// 表示P没有运行用户代码或者调度器代码
 	_Pidle = iota
 
 	// _Prunning means a P is owned by an M and is being used to
@@ -129,6 +130,7 @@ const (
 	// do), _Psyscall (when entering a syscall), or _Pgcstop (to
 	// halt for the GC). The M may also hand ownership of the P
 	// off directly to another M (e.g., to schedule a locked G).
+	// 被 m 持有，在运行用户代码或者调度器代码
 	_Prunning
 
 	// _Psyscall means a P is not running user code. It has
@@ -141,6 +143,8 @@ const (
 	// an M successfully CASes its original P back to _Prunning
 	// after a syscall, it must understand the P may have been
 	// used by another M in the interim.
+	// 没有执行用户代码，当前 m 陷入系统调用。关联系统调用的 m, 可以在系统调用后继续绑定，保持内存局部性，避免缓存失效,
+	// 但是如果系统调用时间过长，p 会被其他 m 抢占
 	_Psyscall
 
 	// _Pgcstop means a P is halted for STW and owned by the M
@@ -151,12 +155,14 @@ const (
 	//
 	// The P retains its run queue and startTheWorld will restart
 	// the scheduler on Ps with non-empty run queues.
+	// 被线程 M 持有，当前处理器由于垃圾回收 STW 被停止或者刚刚新建
 	_Pgcstop
 
 	// _Pdead means a P is no longer used (GOMAXPROCS shrank). We
 	// reuse Ps if GOMAXPROCS increases. A dead P is mostly
 	// stripped of its resources, though a few things remain
 	// (e.g., trace buffers).
+	// 当前处理器已经不被使用
 	_Pdead
 )
 
@@ -552,7 +558,7 @@ type m struct {
 
 	// Fields not known to debuggers.
 	procid     uint64       // for debuggers, but offset not hard-coded
-	gsignal    *g           // signal-handling g
+	gsignal    *g           // signal-handling g 处理 signal 的 g
 	goSigStack gsignalStack // Go-allocated signal handling stack
 	sigmask    sigset       // storage for saved signal mask
 	// 启动时将 m0.tls 保存到FS寄存器(用户态使用FS寄存器保存线程本地存储的基址)
@@ -561,9 +567,10 @@ type m struct {
 	// 通过线程本地存储可以实现结构体 m 与工作线程之间的绑定
 	tls      [tlsSlots]uintptr // thread-local storage (for x86 extern register)
 	mstartfn func()
-	// 当前用户的 g
-	curg          *g       // current running goroutine
-	caughtsig     guintptr // goroutine running during fatal signal
+	// 当前运行的 g
+	curg      *g       // current running goroutine
+	caughtsig guintptr // goroutine running during fatal signal
+	// 如果在运行 go 代码，为当前运行的 p, 如果在其他情况，为 nil
 	p             puintptr // attached p for executing go code (nil if not executing go code)
 	nextp         puintptr
 	oldp          puintptr // the p that was attached before executing a syscall
@@ -589,6 +596,7 @@ type m struct {
 	cgoCallersUse atomic.Uint32 // if non-zero, cgoCallers in use temporarily
 	cgoCallers    *cgoCallers   // cgo traceback if crashing in cgo call
 	park          note
+	// 在 allm 里面用来链接下一个 m
 	alllink       *m // on allm
 	schedlink     muintptr
 	lockedg       guintptr
@@ -634,21 +642,26 @@ type m struct {
 
 // 执行用户 go 代码所需要的资源，比如调度器状态、内存分配器状态等。
 type p struct {
-	id          int32
-	status      uint32 // one of pidle/prunning/...
-	link        puintptr
+	id int32
+	// p 的状态
+	status uint32   // one of pidle/prunning/...
+	link   puintptr // 用来在链表结构里面链接下一个 p
+	// p 每调度一次 g 就会+1，每调度达到61次，会从全局队列里面取一个 g 运行，避免本地队列不断创建 g 导致全局队列运行不到
 	schedtick   uint32     // incremented on every scheduler call
 	syscalltick uint32     // incremented on every system call
 	sysmontick  sysmontick // last tick observed by sysmon
-	m           muintptr   // back-link to associated m (nil if idle)
+	// 关联的 m
+	m           muintptr // back-link to associated m (nil if idle)
 	mcache      *mcache
 	pcache      pageCache
 	raceprocctx uintptr
 
+	// defer 结构体对象池
 	deferpool    []*_defer // pool of available defer structs (see panic.go)
 	deferpoolbuf [32]*_defer
 
 	// Cache of goroutine ids, amortizes accesses to runtime·sched.goidgen.
+	// 缓存到 p 里面的可分配的 goid, 范围为 [goidcache, goidcacheend)
 	goidcache    uint64
 	goidcacheend uint64
 
@@ -669,10 +682,11 @@ type p struct {
 	//
 	// Note that while other P's may atomically CAS this to zero,
 	// only the owner P can CAS it to a valid G.
+	// 缓存可立即执行的 G
 	runnext guintptr
 
 	// Available G's (status == Gdead)
-	// p 的本地 g 队列
+	// p 的本地 g 缓存队列，G 状态等于 Gdead
 	gFree struct {
 		gList
 		n int32
@@ -802,24 +816,30 @@ type schedt struct {
 	// When increasing nmidle, nmidlelocked, nmsys, or nmfreed, be
 	// sure to call checkdead().
 
-	midle        muintptr // idle m's waiting for work
-	nmidle       int32    // number of idle m's waiting for work
-	nmidlelocked int32    // number of locked m's waiting for work
-	mnext        int64    // number of m's that have been created and next M ID
-	maxmcount    int32    // maximum number of m's allowed (or die)
-	nmsys        int32    // number of system m's not counted for deadlock
-	nmfreed      int64    // cumulative number of freed m's
+	// 空闲的 M 列表
+	midle muintptr // idle m's waiting for work
+	// 空闲的 M 列表数量
+	nmidle       int32 // number of idle m's waiting for work
+	nmidlelocked int32 // number of locked m's waiting for work
+	// 下一个被创建的 M 的 id
+	mnext int64 // number of m's that have been created and next M ID
+	// 能拥有的最大数量的 M
+	maxmcount int32 // maximum number of m's allowed (or die)
+	nmsys     int32 // number of system m's not counted for deadlock
+	nmfreed   int64 // cumulative number of freed m's
 
 	ngsys atomic.Int32 // number of system goroutines
 
-	pidle        puintptr // idle p's
-	npidle       atomic.Int32
+	pidle  puintptr     // idle p's  没有运行用户代码或者调度器 的 p 链表
+	npidle atomic.Int32 // 没有运行用户代码或者调度器 的 p 链表的长度
+	// 处于 spinning 状态的 M 的数量
 	nmspinning   atomic.Int32  // See "Worker thread parking/unparking" comment in proc.go.
 	needspinning atomic.Uint32 // See "Delicate dance" comment in proc.go. Boolean. Must hold sched.lock to set to 1.
 
 	// Global runnable queue.
-	// 全局 g 队列
-	runq     gQueue
+	// 全局 g 队列, 状态是 runnable
+	runq gQueue
+	// 全局 g 队列的大小
 	runqsize int32
 
 	// disable controls selective disabling of the scheduler.
@@ -835,7 +855,7 @@ type schedt struct {
 	}
 
 	// Global cache of dead G's.
-	// 全局 g 缓存
+	// 全局 g 缓存，状态都是 dead
 	gFree struct {
 		lock    mutex
 		stack   gList // Gs with stacks
@@ -844,10 +864,12 @@ type schedt struct {
 	}
 
 	// Central cache of sudog structs.
+	// sudog 的对象池
 	sudoglock  mutex
 	sudogcache *sudog
 
 	// Central pool of available defer structs.
+	// defer 结构的对象池
 	deferlock mutex
 	deferpool *_defer
 
@@ -869,6 +891,7 @@ type schedt struct {
 
 	profilehz int32 // cpu profiling rate
 
+	// 上次 resize allp 的时间点
 	procresizetime int64 // nanotime() of last change to gomaxprocs
 	totaltime      int64 // ∫gomaxprocs dt up to procresizetime
 
@@ -1175,9 +1198,11 @@ var (
 
 	// allpLock protects P-less reads and size changes of allp, idlepMask,
 	// and timerpMask, and all writes to allp.
+	// p 的锁
 	allpLock mutex
 	// len(allp) == gomaxprocs; may change at safe points, otherwise
 	// immutable.
+	// p 的列表
 	allp []*p
 	// Bitmask of Ps in _Pidle list, one bit per P. Reads and writes must
 	// be atomic. Length may change at safe points.

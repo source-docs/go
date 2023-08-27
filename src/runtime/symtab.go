@@ -503,6 +503,7 @@ type modulehash struct {
 // To make sure the map isn't collected, we keep a second reference here.
 var pinnedTypemaps []map[typeOff]*_type
 
+// 模块数据的链表
 var firstmoduledata moduledata  // linker symbol
 var lastmoduledatap *moduledata // linker symbol
 var modulesSlice *[]*moduledata // see activeModules
