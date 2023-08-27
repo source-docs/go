@@ -423,7 +423,7 @@ TEXT runtime·asminit(SB),NOSPLIT,$0-0
 	RET
 
 TEXT runtime·mstart(SB),NOSPLIT|TOPFRAME,$0 // 启动 m0
-	CALL	runtime·mstart0(SB) // runtime/proc.go:1440
+	CALL	runtime·mstart0(SB) // runtime/proc.go:1452
 	RET // not reached
 
 /*

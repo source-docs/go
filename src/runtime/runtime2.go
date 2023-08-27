@@ -571,20 +571,24 @@ type m struct {
 	curg      *g       // current running goroutine
 	caughtsig guintptr // goroutine running during fatal signal
 	// 如果在运行 go 代码，为当前运行的 p, 如果在其他情况，为 nil
-	p             puintptr // attached p for executing go code (nil if not executing go code)
-	nextp         puintptr
-	oldp          puintptr // the p that was attached before executing a syscall
-	id            int64
-	mallocing     int32
-	throwing      throwType
-	preemptoff    string // if != "", keep curg running on this m
-	locks         int32
-	dying         int32
-	profilehz     int32
-	spinning      bool // m is out of work and is actively looking for work
-	blocked       bool // m is blocked on a note
-	newSigstack   bool // minit on C thread called sigaltstack
-	printlock     int8
+	p puintptr // attached p for executing go code (nil if not executing go code)
+	// 指定下次 m 要绑定哪个 p, 在 stw 中用来保证 m 和 p 解绑后，还能绑定之前的 p, 在启动的时候，可以指定要绑定哪个 p
+	nextp puintptr
+	// 系统调用时，指定之前绑定的是哪个 p, 系统调用完成如果还在，就继续绑定
+	// 如果系统调用时间太长，会被解绑
+	oldp        puintptr // the p that was attached before executing a syscall
+	id          int64
+	mallocing   int32
+	throwing    throwType
+	preemptoff  string // if != "", keep curg running on this m
+	locks       int32
+	dying       int32
+	profilehz   int32
+	spinning    bool // m is out of work and is actively looking for work
+	blocked     bool // m is blocked on a note
+	newSigstack bool // minit on C thread called sigaltstack
+	printlock   int8
+	// 是否正在调用 cgo
 	incgo         bool          // m is executing a cgo call
 	isextra       bool          // m is an extra m
 	freeWait      atomic.Uint32 // Whether it is safe to free g0 and delete m (one of freeMRef, freeMStack, freeMWait)
@@ -877,8 +881,11 @@ type schedt struct {
 	// m.exited is set. Linked through m.freelink.
 	freem *m
 
-	gcwaiting  atomic.Bool // gc is waiting to run
-	stopwait   int32
+	// 准备 stw
+	gcwaiting atomic.Bool // gc is waiting to run
+	// 计数还有多少个 m 还没有停，每停止一个 m，会 -1
+	stopwait int32
+	//
 	stopnote   note
 	sysmonwait atomic.Bool
 	sysmonnote note

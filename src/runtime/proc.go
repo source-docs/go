@@ -1446,6 +1446,7 @@ func mstart()
 // barriers are not allowed.
 //
 // m 启动入口点
+// 启动 M，开始调度 goroutine
 //
 //go:nosplit
 //go:nowritebarrierrec
@@ -1518,11 +1519,12 @@ func mstart1() {
 	// Install signal handlers; after minit so that minit can
 	// prepare the thread to be able to handle the signals.
 	if gp.m == &m0 {
+		// 如果是 m0， 注册信号，初始化处理 syscall.NewCallback 回调的单独的 m
 		mstartm0()
 	}
 
 	if fn := gp.m.mstartfn; fn != nil {
-		fn()
+		fn() // 如果设置了 mstartfn 会直接开始运行， 可以是死循环，如 sysmon， mspinning， templateThread
 	}
 
 	if gp.m != &m0 {
@@ -2358,7 +2360,9 @@ func stopm() {
 	lock(&sched.lock)
 	mput(gp.m)
 	unlock(&sched.lock)
-	mPark()
+	mPark() // 挂起 m, 直到 stw 结束
+	// 在  startTheWorldWithSema 里面，会通过 p 找到 m, 将 m 设置到 m.nextp，
+	// 这样可以继续绑定之前的 p, 不会导致缓存失效
 	acquirep(gp.m.nextp.ptr())
 	gp.m.nextp = 0
 }
@@ -2641,7 +2645,7 @@ func gcstopm() {
 	if !sched.gcwaiting.Load() {
 		throw("gcstopm: not waiting for gc")
 	}
-	if gp.m.spinning {
+	if gp.m.spinning { // 如果是自旋中，停止自旋
 		gp.m.spinning = false
 		// OK to just drop nmspinning here,
 		// startTheWorld will unpark threads as necessary.
@@ -2649,12 +2653,13 @@ func gcstopm() {
 			throw("gcstopm: negative nmspinning")
 		}
 	}
-	pp := releasep()
+	pp := releasep() // 解绑 p
 	lock(&sched.lock)
 	pp.status = _Pgcstop
-	sched.stopwait--
+	sched.stopwait-- // 计数 -1
 	if sched.stopwait == 0 {
-		notewakeup(&sched.stopnote)
+		// 如果当前 m 是最后一个，通知发起 stw 的 m 所有的 m 都停止了，继续执行下面的 gc 逻辑了
+		notewakeup(&sched.stopnote) // sched.stopnote=locked
 	}
 	unlock(&sched.lock)
 	stopm()
@@ -2723,7 +2728,7 @@ func findRunnable() (gp *g, inheritTime, tryWakeP bool) {
 
 top:
 	pp := mp.p.ptr()
-	if sched.gcwaiting.Load() {
+	if sched.gcwaiting.Load() { // 如果是 stop the world，先停止等待 gc, stw 完成后，继续执行
 		gcstopm()
 		goto top
 	}
@@ -3381,7 +3386,7 @@ func schedule() {
 		throw("schedule: holding locks")
 	}
 
-	if mp.lockedg != 0 {
+	if mp.lockedg != 0 { // 如果当前 m 是处理系统调用回调的。（初始化：oneNewExtraM()）
 		stoplockedm()
 		execute(mp.lockedg.ptr(), false) // Never returns.
 	}
@@ -5105,6 +5110,7 @@ func procresize(nprocs int32) *p {
 	mcache0 = nil
 
 	// release resources from unused P's
+	// 缩减的 p, 把超出范围的 p 销毁
 	for i := nprocs; i < old; i++ {
 		pp := allp[i]
 		pp.destroy()
@@ -5123,21 +5129,21 @@ func procresize(nprocs int32) *p {
 	var runnablePs *p
 	for i := nprocs - 1; i >= 0; i-- {
 		pp := allp[i]
-		if gp.m.p.ptr() == pp {
+		if gp.m.p.ptr() == pp { // 如果是当前 p，跳过
 			continue
 		}
 		pp.status = _Pidle
 		if runqempty(pp) {
-			pidleput(pp, now)
-		} else {
+			pidleput(pp, now) // 如果 p 的当前本地队列送空的，放到全局 sched.pidle 里面
+		} else { // 不为空，则串一个链表返回回去
 			pp.m.set(mget())
 			pp.link.set(runnablePs)
 			runnablePs = pp
 		}
 	}
 	stealOrder.reset(uint32(nprocs))
-	var int32p *int32 = &gomaxprocs // make compiler check that gomaxprocs is an int32
-	atomic.Store((*uint32)(unsafe.Pointer(int32p)), uint32(nprocs))
+	var int32p *int32 = &gomaxprocs                                 // make compiler check that gomaxprocs is an int32
+	atomic.Store((*uint32)(unsafe.Pointer(int32p)), uint32(nprocs)) // gomaxprocs = nprocs
 	if old != nprocs {
 		// Notify the limiter that the amount of procs has changed.
 		gcCPULimiter.resetCapacity(now, nprocs)
@@ -5194,6 +5200,7 @@ func wirep(pp *p) {
 }
 
 // Disassociate p and the current m.
+// 解绑当前 p 和 m, 并且返回当前 p
 func releasep() *p {
 	gp := getg()
 
@@ -5753,6 +5760,7 @@ func schedEnabled(gp *g) bool {
 // Put mp on midle list.
 // sched.lock must be held.
 // May run during STW, so write barriers are not allowed.
+// 将 m 添加到 sched 的空闲列表里面
 //
 //go:nowritebarrierrec
 func mput(mp *m) {
@@ -5996,6 +6004,7 @@ func pidlegetSpinning(now int64) (*p, int64) {
 
 // runqempty reports whether pp has no Gs on its local run queue.
 // It never returns true spuriously.
+// 当前 p 的本地队列和 runnext 缓存是否都是空的
 func runqempty(pp *p) bool {
 	// Defend against a race where 1) pp has G1 in runqnext but runqhead == runqtail,
 	// 2) runqput on pp kicks G1 to the runq, 3) runqget on pp empties runqnext.
