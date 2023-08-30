@@ -900,6 +900,7 @@ func ready(gp *g, traceskip int, next bool) {
 
 	// Mark runnable.
 	mp := acquirem() // disable preemption because it can be holding p in a local var
+	// 如果状态不是 _Gwaiting， 也不是 _Gscanwaiting
 	if status&^_Gscan != _Gwaiting {
 		dumpgstatus(gp)
 		throw("bad g->status in ready")
@@ -907,6 +908,7 @@ func ready(gp *g, traceskip int, next bool) {
 
 	// status is Gwaiting or Gscanwaiting, make Grunnable and put on runq
 	casgstatus(gp, _Gwaiting, _Grunnable)
+	// 将 g 放入 p 的本地队列
 	runqput(mp.p.ptr(), gp, next)
 	wakep()
 	releasem(mp)
@@ -946,6 +948,7 @@ func freezetheworld() {
 
 // All reads and writes of g's status go through readgstatus, casgstatus
 // castogscanstatus, casfrom_Gscanstatus.
+// 原子地读取 g 的状态
 //
 //go:nosplit
 func readgstatus(gp *g) uint32 {
@@ -1016,6 +1019,10 @@ var casgstatusAlwaysTrack = false
 //go:nosplit
 func casgstatus(gp *g, oldval, newval uint32) {
 	if (oldval&_Gscan != 0) || (newval&_Gscan != 0) || oldval == newval {
+		// 3 种情况会抛异常
+		// 1. 旧值调用 cas 的时候填了以 _Gscan 开头的几个状态
+		// 2. 新值调用 cas 的时候填了以 _Gscan 开头的几个状态
+		// 3. 旧值和新值一样
 		systemstack(func() {
 			print("runtime: casgstatus: oldval=", hex(oldval), " newval=", hex(newval), "\n")
 			throw("casgstatus: bad incoming values")
@@ -2765,6 +2772,7 @@ top:
 	// Otherwise two goroutines can completely occupy the local runqueue
 	// by constantly respawning each other.
 	if pp.schedtick%61 == 0 && sched.runqsize > 0 {
+		// 每调度达到61次，会从全局队列里面取一个 g 运行，避免本地队列不断创建 g 导致全局队列运行不到
 		lock(&sched.lock)
 		gp := globrunqget(pp, 1)
 		unlock(&sched.lock)
@@ -2784,11 +2792,13 @@ top:
 	}
 
 	// local runq
+	// 从 runnext 或者从 本地 g 队列里面取一个 g
 	if gp, inheritTime := runqget(pp); gp != nil {
 		return gp, inheritTime, false
 	}
 
 	// global runq
+	// 如果本地队列取不到，从 全局队列里面取
 	if sched.runqsize != 0 {
 		lock(&sched.lock)
 		gp := globrunqget(pp, 0)
@@ -3092,6 +3102,7 @@ func stealWork(now int64) (gp *g, inheritTime bool, rnow, pollUntil int64, newWo
 
 	const stealTries = 4
 	for i := 0; i < stealTries; i++ {
+		// 如果重试到最后一次，开始尝试从 timers 和 runnext 里面偷取
 		stealTimersOrRunNextG := i == stealTries-1
 
 		for enum := stealOrder.start(fastrand()); !enum.done(); enum.next() {
@@ -3393,6 +3404,7 @@ func schedule() {
 
 	// We should not schedule away from a g that is executing a cgo call,
 	// since the cgo call is using the m's g0 stack.
+	// 不应该调度一个正在执行 cgo 的 m, 这时候的 g 正在使用 m 的 g0 的栈
 	if mp.incgo {
 		throw("schedule: in cgo")
 	}
@@ -3404,6 +3416,7 @@ top:
 	// Safety check: if we are spinning, the run queue should be empty.
 	// Check this before calling checkTimers, as that might call
 	// goready to put a ready goroutine on the local run queue.
+	// 断言处于自旋状态的 m 本地队列应该送空的
 	if mp.spinning && (pp.runnext != 0 || pp.runqhead != pp.runqtail) {
 		throw("schedule: spinning with local work")
 	}
@@ -5141,7 +5154,7 @@ func procresize(nprocs int32) *p {
 			runnablePs = pp
 		}
 	}
-	stealOrder.reset(uint32(nprocs))
+	stealOrder.reset(uint32(nprocs))                                // p 数量有变化，重新设置 stealOrder 的 count
 	var int32p *int32 = &gomaxprocs                                 // make compiler check that gomaxprocs is an int32
 	atomic.Store((*uint32)(unsafe.Pointer(int32p)), uint32(nprocs)) // gomaxprocs = nprocs
 	if old != nprocs {
@@ -5828,29 +5841,37 @@ func globrunqputbatch(batch *gQueue, n int32) {
 
 // Try get a batch of G's from the global runnable queue.
 // sched.lock must be held.
+// 尝试从全局 g 队列里面取一批
 func globrunqget(pp *p, max int32) *g {
 	assertLockHeld(&sched.lock)
 
-	if sched.runqsize == 0 {
+	if sched.runqsize == 0 { // 全局队列为空，退出
 		return nil
 	}
 
+	// 取 队列长度 / (最大运行 p 数量 + 1)
+	// 最大不超过 队列长度
 	n := sched.runqsize/gomaxprocs + 1
 	if n > sched.runqsize {
 		n = sched.runqsize
 	}
+
+	// 超过参数限定的最大值，以参数为准
 	if max > 0 && n > max {
 		n = max
 	}
+
+	// 取的数量也不会超过本地队列的一半
 	if n > int32(len(pp.runq))/2 {
 		n = int32(len(pp.runq)) / 2
 	}
 
 	sched.runqsize -= n
 
+	// 取一个准备运行
 	gp := sched.runq.pop()
 	n--
-	for ; n > 0; n-- {
+	for ; n > 0; n-- { // 其他的放本地队列里面
 		gp1 := sched.runq.pop()
 		runqput(pp, gp1, false)
 	}
@@ -6155,26 +6176,28 @@ func runqputbatch(pp *p, q *gQueue, qsize int) {
 // If inheritTime is true, gp should inherit the remaining time in the
 // current time slice. Otherwise, it should start a new time slice.
 // Executed only by the owner P.
+// 从 runnext 或者从 本地 g 队列里面取一个 g
 func runqget(pp *p) (gp *g, inheritTime bool) {
 	// If there's a runnext, it's the next G to run.
 	next := pp.runnext
 	// If the runnext is non-0 and the CAS fails, it could only have been stolen by another P,
 	// because other Ps can race to set runnext to 0, but only the current P can set it to non-0.
 	// Hence, there's no need to retry this CAS if it fails.
-	if next != 0 && pp.runnext.cas(next, 0) {
-		return next.ptr(), true
+	if next != 0 && pp.runnext.cas(next, 0) { // 如果 runnext 有 g, cas 地取一下
+		return next.ptr(), true // 取到了直接返回
 	}
 
 	for {
 		h := atomic.LoadAcq(&pp.runqhead) // load-acquire, synchronize with other consumers
 		t := pp.runqtail
-		if t == h {
+		if t == h { // 队列空了
 			return nil, false
 		}
 		gp := pp.runq[h%uint32(len(pp.runq))].ptr()
 		if atomic.CasRel(&pp.runqhead, h, h+1) { // cas-release, commits consume
-			return gp, false
+			return gp, false // 取到了就返回
 		}
+		// 没有取成功，继续重试,说明有其他线程在并发操作 g 的本地队列
 	}
 }
 
