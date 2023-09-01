@@ -2351,6 +2351,7 @@ func templateThread() {
 
 // Stops execution of the current m until new work is available.
 // Returns with acquired P.
+// 停止执行当前 m, 直到被唤醒
 func stopm() {
 	gp := getg()
 
@@ -2365,11 +2366,12 @@ func stopm() {
 	}
 
 	lock(&sched.lock)
-	mput(gp.m)
+	mput(gp.m) // 将 m 添加到 sched 的空闲列表里面
 	unlock(&sched.lock)
-	mPark() // 挂起 m, 直到 stw 结束
+	mPark() // 挂起 m, 直到被唤醒
 	// 在  startTheWorldWithSema 里面，会通过 p 找到 m, 将 m 设置到 m.nextp，
 	// 这样可以继续绑定之前的 p, 不会导致缓存失效
+	// nextp 就是被唤醒的 m， 将要绑定的 p
 	acquirep(gp.m.nextp.ptr())
 	gp.m.nextp = 0
 }
@@ -2832,9 +2834,10 @@ top:
 	// Limit the number of spinning Ms to half the number of busy Ps.
 	// This is necessary to prevent excessive CPU consumption when
 	// GOMAXPROCS>>1 but the program parallelism is low.
+	// 如果 m 现在在自旋，或者当前自旋的 m 数量小于 运行中 p 的一半
 	if mp.spinning || 2*sched.nmspinning.Load() < gomaxprocs-sched.npidle.Load() {
 		if !mp.spinning {
-			mp.becomeSpinning()
+			mp.becomeSpinning() // 如果没有自旋，m 开始自旋
 		}
 
 		gp, inheritTime, tnow, w, newWork := stealWork(now)
@@ -2859,6 +2862,7 @@ top:
 	//
 	// If we're in the GC mark phase, can safely scan and blacken objects,
 	// and have work to do, run idle-time marking rather than give up the P.
+	// 当还是找不到什么药做的，会运行 GC 标记任务
 	if gcBlackenEnabled != 0 && gcMarkWorkAvailable(pp) && gcController.addIdleMarkWorker() {
 		node := (*gcBgMarkWorkerNode)(gcBgMarkWorkerPool.pop())
 		if node != nil {
@@ -2901,22 +2905,22 @@ top:
 
 	// return P and block
 	lock(&sched.lock)
-	if sched.gcwaiting.Load() || pp.runSafePointFn != 0 {
+	if sched.gcwaiting.Load() || pp.runSafePointFn != 0 { // 发现现在是 gcwaiting 状态，或者送存在 runSafePointFn 方法
 		unlock(&sched.lock)
-		goto top
+		goto top // 回去继续运行
 	}
-	if sched.runqsize != 0 {
-		gp := globrunqget(pp, 0)
+	if sched.runqsize != 0 { // 如果全局队列有 g
+		gp := globrunqget(pp, 0) // 从全局队列取出开始执行
 		unlock(&sched.lock)
 		return gp, false, false
 	}
-	if !mp.spinning && sched.needspinning.Load() == 1 {
+	if !mp.spinning && sched.needspinning.Load() == 1 { // 如果当前的 m 不再自旋，并且现在需要被自旋
 		// See "Delicate dance" comment below.
-		mp.becomeSpinning()
+		mp.becomeSpinning() // 当前 m 开始自旋
 		unlock(&sched.lock)
 		goto top
 	}
-	if releasep() != pp {
+	if releasep() != pp { // 解绑 p，并且把 p 状态改成 _Pidle, 返回之前 m 绑定的 p
 		throw("findrunnable: wrong p")
 	}
 	now = pidleput(pp, now)
@@ -2976,13 +2980,14 @@ top:
 
 		// Check all runqueues once again.
 		pp := checkRunqsNoP(allpSnapshot, idlepMaskSnapshot)
-		if pp != nil {
+		if pp != nil { // 如果发现有可运行的 g, 绑定一个空闲的 p, 绑定成功后开始调度
 			acquirep(pp)
-			mp.becomeSpinning()
+			mp.becomeSpinning() // 修改状态，开始自旋
 			goto top
 		}
 
 		// Check for idle-priority GC work again.
+		// 如果上一步没发现可运行的 g 或者拿不到空闲的 p, 尝试运行 gc 任务
 		pp, gp := checkIdleGCNoP()
 		if pp != nil {
 			acquirep(pp)
@@ -3105,12 +3110,12 @@ func stealWork(now int64) (gp *g, inheritTime bool, rnow, pollUntil int64, newWo
 		// 如果重试到最后一次，开始尝试从 timers 和 runnext 里面偷取
 		stealTimersOrRunNextG := i == stealTries-1
 
-		for enum := stealOrder.start(fastrand()); !enum.done(); enum.next() {
+		for enum := stealOrder.start(fastrand()); !enum.done(); enum.next() { // 按随机顺序遍历所有 p, 但是保证能遍历到所有的 p
 			if sched.gcwaiting.Load() {
 				// GC work may be available.
 				return nil, false, now, pollUntil, true
 			}
-			p2 := allp[enum.position()]
+			p2 := allp[enum.position()] // 取出一个随机遍历到的 p
 			if pp == p2 {
 				continue
 			}
@@ -3129,6 +3134,7 @@ func stealWork(now int64) (gp *g, inheritTime bool, rnow, pollUntil int64, newWo
 			// timerpMask tells us whether the P may have timers at all. If it
 			// can't, no need to check at all.
 			if stealTimersOrRunNextG && timerpMask.read(enum.position()) {
+				// 如果当前是最后一次寻找了，并且当前 p 有定时器
 				tnow, w, ran := checkTimers(p2, now)
 				now = tnow
 				if w != 0 && (pollUntil == 0 || w < pollUntil) {
@@ -3151,9 +3157,9 @@ func stealWork(now int64) (gp *g, inheritTime bool, rnow, pollUntil int64, newWo
 			}
 
 			// Don't bother to attempt to steal if p2 is idle.
-			if !idlepMask.read(enum.position()) {
+			if !idlepMask.read(enum.position()) { // 如果 p2 是空闲的，不去尝试偷取
 				if gp := runqsteal(pp, p2, stealTimersOrRunNextG); gp != nil {
-					return gp, false, now, pollUntil, ranTimer
+					return gp, false, now, pollUntil, ranTimer // 如果窃取成功了，直接返回
 				}
 			}
 		}
@@ -3170,14 +3176,18 @@ func stealWork(now int64) (gp *g, inheritTime bool, rnow, pollUntil int64, newWo
 // On entry we have no P. If a G is available to steal and a P is available,
 // the P is returned which the caller should acquire and attempt to steal the
 // work to.
+// 检查所有 p 里面是否有可执行的 g
+// 如果有，尝试获取一个 p,
+// 如果获取到了，开始执行
+// 如果没有获取到 p, 设置 needspinning 标记位然后退出
 func checkRunqsNoP(allpSnapshot []*p, idlepMaskSnapshot pMask) *p {
-	for id, p2 := range allpSnapshot {
-		if !idlepMaskSnapshot.read(uint32(id)) && !runqempty(p2) {
+	for id, p2 := range allpSnapshot { // 遍历所有 p
+		if !idlepMaskSnapshot.read(uint32(id)) && !runqempty(p2) { // 如果当前 p 不是空闲的，并且其存在可运行的 g
 			lock(&sched.lock)
 			pp, _ := pidlegetSpinning(0)
 			if pp == nil {
 				// Can't get a P, don't bother checking remaining Ps.
-				unlock(&sched.lock)
+				unlock(&sched.lock) // 空闲列表里面没有 p, 停止循环
 				return nil
 			}
 			unlock(&sched.lock)
@@ -3193,8 +3203,8 @@ func checkRunqsNoP(allpSnapshot []*p, idlepMaskSnapshot pMask) *p {
 //
 // Returns updated pollUntil value.
 func checkTimersNoP(allpSnapshot []*p, timerpMaskSnapshot pMask, pollUntil int64) int64 {
-	for id, p2 := range allpSnapshot {
-		if timerpMaskSnapshot.read(uint32(id)) {
+	for id, p2 := range allpSnapshot { // 检查所有 p
+		if timerpMaskSnapshot.read(uint32(id)) { // 如果当前 p 存在计时器
 			w := nobarrierWakeTime(p2)
 			if w != 0 && (pollUntil == 0 || w < pollUntil) {
 				pollUntil = w
@@ -5213,7 +5223,7 @@ func wirep(pp *p) {
 }
 
 // Disassociate p and the current m.
-// 解绑当前 p 和 m, 并且返回当前 p
+// 解绑 p，并且把 p 状态改成 _Pidle, 返回之前 m 绑定的 p
 func releasep() *p {
 	gp := getg()
 
@@ -5221,7 +5231,7 @@ func releasep() *p {
 		throw("releasep: invalid arg")
 	}
 	pp := gp.m.p.ptr()
-	if pp.m.ptr() != gp.m || pp.status != _Prunning {
+	if pp.m.ptr() != gp.m || pp.status != _Prunning { // 断言 p 的 m 和当前 g 绑定的 m 是同一个，只有当前 m 可以释放和 p 的关系
 		print("releasep: m=", gp.m, " m->p=", gp.m.p.ptr(), " p->m=", hex(pp.m), " p->status=", pp.status, "\n")
 		throw("releasep: invalid p state")
 	}
@@ -5956,17 +5966,17 @@ func updateTimerPMask(pp *p) {
 func pidleput(pp *p, now int64) int64 {
 	assertLockHeld(&sched.lock)
 
-	if !runqempty(pp) {
+	if !runqempty(pp) { // 再次断言确定 当前 p 的本地队列和 runnext 缓存是否都是空的
 		throw("pidleput: P has non-empty run queue")
 	}
 	if now == 0 {
 		now = nanotime()
 	}
 	updateTimerPMask(pp) // clear if there are no timers.
-	idlepMask.set(pp.id)
+	idlepMask.set(pp.id) // 维护 idlepMask 将 p 对应的位置标记为 1，表示当前 p 是空闲的
 	pp.link = sched.pidle
-	sched.pidle.set(pp)
-	sched.npidle.Add(1)
+	sched.pidle.set(pp) // 将 p 插入 pidle 链表
+	sched.npidle.Add(1) // 计数器 +1
 	if !pp.limiterEvent.start(limiterEventIdle, now) {
 		throw("must be able to track idle limiter event")
 	}
@@ -5990,9 +6000,9 @@ func pidleget(now int64) (*p, int64) {
 			now = nanotime()
 		}
 		timerpMask.set(pp.id)
-		idlepMask.clear(pp.id)
-		sched.pidle = pp.link
-		sched.npidle.Add(-1)
+		idlepMask.clear(pp.id) // 清理空闲 p 标志
+		sched.pidle = pp.link  // 从 pidle 删除当前 p
+		sched.npidle.Add(-1)   // 空闲 p 数量 -1
 		pp.limiterEvent.stop(limiterEventIdle, now)
 	}
 	return pp, now
@@ -6016,6 +6026,7 @@ func pidlegetSpinning(now int64) (*p, int64) {
 		// See "Delicate dance" comment in findrunnable. We found work
 		// that we cannot take, we must synchronize with non-spinning
 		// Ms that may be preparing to drop their P.
+		// 如果当前 m 发现了可以执行的 g, 但是已经没有多余的 p 来自己执行了，会设置 needspinning， 这样其他正在准备放弃 p 的 m 就会开始自旋
 		sched.needspinning.Store(1)
 		return nil, now
 	}
@@ -6244,17 +6255,22 @@ retry:
 // Batch is a ring buffer starting at batchHead.
 // Returns number of grabbed goroutines.
 // Can be executed by any P.
+// 从 pp 偷取一批 g 到 batch 里面
+// stealRunNextG: 是否偷取 runnext 里面的 g
 func runqgrab(pp *p, batch *[256]guintptr, batchHead uint32, stealRunNextG bool) uint32 {
 	for {
 		h := atomic.LoadAcq(&pp.runqhead) // load-acquire, synchronize with other consumers
 		t := atomic.LoadAcq(&pp.runqtail) // load-acquire, synchronize with the producer
-		n := t - h
-		n = n - n/2
-		if n == 0 {
-			if stealRunNextG {
+		n := t - h                        // pp 的队列里面有多少个 g
+		n = n - n/2                       // 偷一半
+		if n == 0 {                       // 如果没啥可偷的
+			if stealRunNextG { // 如果可以偷 runnext
 				// Try to steal from pp.runnext.
 				if next := pp.runnext; next != 0 {
 					if pp.status == _Prunning {
+						// 如果目标 p 再运行，尝试 sleep 一下，确定 p 不会立即运行 runnext g，
+						// 这样可以防止 g 在不同的 p 之间来回抢
+
 						// Sleep to ensure that pp isn't about to run the g
 						// we are about to steal.
 						// The important use case here is when the g running
@@ -6274,24 +6290,24 @@ func runqgrab(pp *p, batch *[256]guintptr, batchHead uint32, stealRunNextG bool)
 							osyield()
 						}
 					}
-					if !pp.runnext.cas(next, 0) {
+					if !pp.runnext.cas(next, 0) { // 将 runnext 置空
 						continue
 					}
-					batch[batchHead%uint32(len(batch))] = next
+					batch[batchHead%uint32(len(batch))] = next // 放入 batch
 					return 1
 				}
 			}
 			return 0
 		}
 		if n > uint32(len(pp.runq)/2) { // read inconsistent h and t
-			continue
+			continue // 长度不一致了，要偷取的数量大于了队列长度，重新读取一遍
 		}
 		for i := uint32(0); i < n; i++ {
 			g := pp.runq[(h+i)%uint32(len(pp.runq))]
-			batch[(batchHead+i)%uint32(len(batch))] = g
+			batch[(batchHead+i)%uint32(len(batch))] = g // 把 本地队列 里面的 g 搬到 batch 里面
 		}
 		if atomic.CasRel(&pp.runqhead, h, h+n) { // cas-release, commits consume
-			return n
+			return n // cas 地出队，成功说明没有被其他 m 提前偷取，当前 m 偷取成功了
 		}
 	}
 }
@@ -6299,21 +6315,24 @@ func runqgrab(pp *p, batch *[256]guintptr, batchHead uint32, stealRunNextG bool)
 // Steal half of elements from local runnable queue of p2
 // and put onto local runnable queue of p.
 // Returns one of the stolen elements (or nil if failed).
+// 窃取 p2 运行队列一半的 g，并且返回一个可执行的 g
+// 返回 nil 说明窃取失败了
 func runqsteal(pp, p2 *p, stealRunNextG bool) *g {
 	t := pp.runqtail
 	n := runqgrab(p2, &pp.runq, t, stealRunNextG)
 	if n == 0 {
-		return nil
+		return nil // 如果没偷到
 	}
 	n--
 	gp := pp.runq[(t+n)%uint32(len(pp.runq))].ptr()
-	if n == 0 {
-		return gp
+	if n == 0 { // 取出最后一个，直接运行
+		return gp // 如果只有一个，直接返回
 	}
-	h := atomic.LoadAcq(&pp.runqhead) // load-acquire, synchronize with consumers
-	if t-h+n >= uint32(len(pp.runq)) {
+	h := atomic.LoadAcq(&pp.runqhead)  // load-acquire, synchronize with consumers
+	if t-h+n >= uint32(len(pp.runq)) { // 取到的大于了 runq 大小
 		throw("runqsteal: runq overflow")
 	}
+	// 重新计算队尾
 	atomic.StoreRel(&pp.runqtail, t+n) // store-release, makes the item available for consumption
 	return gp
 }
@@ -6505,47 +6524,49 @@ var stealOrder randomOrder
 // are coprime, then a sequences of (i + X) % GOMAXPROCS gives the required enumeration.
 type randomOrder struct {
 	count    uint32
-	coprimes []uint32
+	coprimes []uint32 // [1: count] 中与 count 互质的数
 }
 
 type randomEnum struct {
-	i     uint32
-	count uint32
-	pos   uint32
-	inc   uint32
+	i     uint32 // 现在送第几次迭代
+	count uint32 // 元素数量
+	pos   uint32 // 当前位置
+	inc   uint32 // 每次加多少
 }
 
 func (ord *randomOrder) reset(count uint32) {
 	ord.count = count
 	ord.coprimes = ord.coprimes[:0]
 	for i := uint32(1); i <= count; i++ {
-		if gcd(i, count) == 1 {
+		if gcd(i, count) == 1 { // 如果当前数与 count 互质，加进 coprimes 里面
 			ord.coprimes = append(ord.coprimes, i)
 		}
 	}
 }
 
+// i 是一个 fastrand() 返回的随机数
 func (ord *randomOrder) start(i uint32) randomEnum {
 	return randomEnum{
 		count: ord.count,
-		pos:   i % ord.count,
-		inc:   ord.coprimes[i/ord.count%uint32(len(ord.coprimes))],
+		pos:   i % ord.count,                                       // 随机选择一个迭代开始的位置
+		inc:   ord.coprimes[i/ord.count%uint32(len(ord.coprimes))], // 从与 count 互质的书里面随机选一个，作为每次的步长
 	}
 }
 
 func (enum *randomEnum) done() bool {
-	return enum.i == enum.count
+	return enum.i == enum.count // 迭代次数等于元素数量，说明便利完了
 }
 
 func (enum *randomEnum) next() {
 	enum.i++
-	enum.pos = (enum.pos + enum.inc) % enum.count
+	enum.pos = (enum.pos + enum.inc) % enum.count // 新位置 = 旧位置 + inc
 }
 
 func (enum *randomEnum) position() uint32 {
 	return enum.pos
 }
 
+// 最大公因数
 func gcd(a, b uint32) uint32 {
 	for b != 0 {
 		a, b = b, a%b

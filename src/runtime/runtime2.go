@@ -834,7 +834,7 @@ type schedt struct {
 
 	ngsys atomic.Int32 // number of system goroutines
 
-	pidle  puintptr     // idle p's  没有运行用户代码或者调度器 的 p 链表
+	pidle  puintptr     // idle p's  没有运行用户代码或者调度器 的 p 链表，处于  _Pidle 状态
 	npidle atomic.Int32 // 没有运行用户代码或者调度器 的 p 链表的长度
 	// 处于 spinning 状态的 M 的数量
 	nmspinning   atomic.Int32  // See "Worker thread parking/unparking" comment in proc.go.
@@ -1219,6 +1219,7 @@ var (
 	// updates to the idle P list under the sched.lock, otherwise a racing
 	// pidleget may clear the mask before pidleput sets the mask,
 	// corrupting the bitmap.
+	// 用来表示对应位置的 p 是否空闲的位图
 	//
 	// N.B., procresize takes ownership of all Ps in stopTheWorldWithSema.
 	idlepMask pMask
