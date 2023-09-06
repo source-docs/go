@@ -16,6 +16,8 @@ import (
 // and we need to know whether to check 32 or 64 bits of the result.
 // (Some libc functions that return 32 bits put junk in the upper 32 bits of AX.)
 
+// 进行一个系统调用
+
 //go:linkname syscall_syscall syscall.syscall
 //go:nosplit
 func syscall_syscall(fn, a1, a2, a3 uintptr) (r1, r2, err uintptr) {

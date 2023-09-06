@@ -54,6 +54,11 @@ func runtime_exitsyscall()
 // //go:linkname to ensure ABI wrappers are generated for external callers
 // (notably x/sys/unix assembly).
 
+// 进入 Syscall 和退出的时候没有通知 runtime,
+// runtime 没有办法通过调度把这个 g 的 m 的 p 调度走
+// 如果使用了 RawSyscall 来做一些阻塞的系统调用，是有可能阻塞其它的 g 的
+// 只是为了在执行那些一定不会阻塞的系统调用时，能节省两次对 runtime 的函数调用消耗。
+
 //go:uintptrkeepalive
 //go:nosplit
 //go:norace

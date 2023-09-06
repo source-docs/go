@@ -2351,7 +2351,7 @@ func templateThread() {
 
 // Stops execution of the current m until new work is available.
 // Returns with acquired P.
-// 停止执行当前 m, 直到被唤醒
+// 停止执行当前 m, 放到sched.midle 里面，直到被唤醒
 func stopm() {
 	gp := getg()
 
@@ -2681,6 +2681,7 @@ func gcstopm() {
 //
 // Write barriers are allowed because this is called immediately after
 // acquiring a P in several places.
+//
 // 执行一些具体的状态转移、协程g与结构体m之间的绑定等操作
 //
 //go:yeswritebarrierrec
@@ -3772,6 +3773,8 @@ func goexit0(gp *g) {
 // save must not have write barriers because invoking a write barrier
 // can clobber getg().sched.
 //
+// 将 pc sp 保存到 gp.sched 里面
+//
 //go:nosplit
 //go:nowritebarrierrec
 func save(pc, sp uintptr) {
@@ -3834,22 +3837,28 @@ func save(pc, sp uintptr) {
 // Note that the increment is done even if tracing is not enabled,
 // because tracing can be enabled in the middle of syscall. We don't want the wait to hang.
 //
+// 标记改 g 处于系统调用状态，
+//
 //go:nosplit
 func reentersyscall(pc, sp uintptr) {
 	gp := getg()
 
 	// Disable preemption because during this function g is in Gsyscall status,
 	// but can have inconsistent g->sched, do not let GC observe it.
+	// 禁止抢占
 	gp.m.locks++
 
 	// Entersyscall must not call any function that might split/grow the stack.
 	// (See details in comment above.)
 	// Catch calls that might, by replacing the stack guard with something that
 	// will trip any stack check and leaving a flag to tell newstack to die.
+	// 不能调用任何会导致栈增长/分裂的函数
 	gp.stackguard0 = stackPreempt
+	// 在 newstack 中，如果发现 throwsplit 是 true 会直接 crash
 	gp.throwsplit = true
 
 	// Leave SP around for GC and traceback.
+	// 保存执行现场到 gp.sched 里面,在 syscall 之后会根据这些数据恢复现场
 	save(pc, sp)
 	gp.syscallsp = sp
 	gp.syscallpc = pc
@@ -3883,8 +3892,11 @@ func reentersyscall(pc, sp uintptr) {
 	gp.m.syscalltick = gp.m.p.ptr().syscalltick
 	gp.sysblocktraced = true
 	pp := gp.m.p.ptr()
+	// p 和 m 解绑
 	pp.m = 0
+	// 但是 m 保存了 p 到 oldp， 等 m 系统调用完成，如果 p 还在，就继续使用
 	gp.m.oldp.set(pp)
+	// m 和 p 解绑
 	gp.m.p = 0
 	atomic.Store(&pp.status, _Psyscall)
 	if sched.gcwaiting.Load() {
@@ -3898,6 +3910,7 @@ func reentersyscall(pc, sp uintptr) {
 // Standard syscall entry used by the go syscall library and normal cgo calls.
 //
 // This is exported via linkname to assembly in the syscall package and x/sys.
+// 在真正系统调用前调用
 //
 //go:nosplit
 //go:linkname entersyscall
@@ -3993,13 +4006,15 @@ func entersyscallblock_handoff() {
 //
 // This is exported via linkname to assembly in the syscall package.
 //
+// 真实系统调用后调用此方法
+//
 //go:nosplit
 //go:nowritebarrierrec
 //go:linkname exitsyscall
 func exitsyscall() {
 	gp := getg()
 
-	gp.m.locks++ // see comment in entersyscall
+	gp.m.locks++ // see comment in entersyscall // 禁止抢占
 	if getcallersp() > gp.syscallsp {
 		throw("exitsyscall: syscall frame is no longer valid")
 	}
@@ -4008,6 +4023,7 @@ func exitsyscall() {
 	oldp := gp.m.oldp.ptr()
 	gp.m.oldp = 0
 	if exitsyscallfast(oldp) {
+		// p 或者成功了，可以运行
 		// When exitsyscallfast returns success, we have a P so can now use
 		// write barriers
 		if goroutineProfile.active {
@@ -4079,6 +4095,8 @@ func exitsyscall() {
 	gp.throwsplit = false
 }
 
+// 尝试获取 p, 如果失败了，返回 false
+//
 //go:nosplit
 func exitsyscallfast(oldp *p) bool {
 	gp := getg()
@@ -4089,14 +4107,16 @@ func exitsyscallfast(oldp *p) bool {
 	}
 
 	// Try to re-acquire the last P.
+	// 如果 oldp 状态还是 _Psyscall， 说明还在等待， cas 地将其转换为 _Pidle
 	if oldp != nil && oldp.status == _Psyscall && atomic.Cas(&oldp.status, _Psyscall, _Pidle) {
 		// There's a cpu for us, so we can run.
-		wirep(oldp)
+		wirep(oldp) // 关联 m 和 p
 		exitsyscallfast_reacquired()
 		return true
 	}
 
 	// Try to get any other idle P.
+	// 之前的 p 已经没了， 尝试获取一个新的
 	if sched.pidle != 0 {
 		var ok bool
 		systemstack(func() {
@@ -4151,7 +4171,7 @@ func exitsyscallfast_pidle() bool {
 	}
 	unlock(&sched.lock)
 	if pp != nil {
-		acquirep(pp)
+		acquirep(pp) //
 		return true
 	}
 	return false
@@ -4162,18 +4182,20 @@ func exitsyscallfast_pidle() bool {
 //
 // Called via mcall, so gp is the calling g from this M.
 //
+// 系统调用后没有获取到 p, 将 g 状态改成 _Grunnable，
+//
 //go:nowritebarrierrec
 func exitsyscall0(gp *g) {
 	casgstatus(gp, _Gsyscall, _Grunnable)
-	dropg()
+	dropg() // 解绑 m 和当前执行的 g
 	lock(&sched.lock)
 	var pp *p
 	if schedEnabled(gp) {
-		pp, _ = pidleget(0)
+		pp, _ = pidleget(0) // 尝试从 sched.pidle 获取一个空闲的 p
 	}
 	var locked bool
-	if pp == nil {
-		globrunqput(gp)
+	if pp == nil { // 没有取到 p
+		globrunqput(gp) // 将 g 放入全局队列
 
 		// Below, we stoplockedm if gp is locked. globrunqput releases
 		// ownership of gp, so we must check if gp is locked prior to
@@ -4186,8 +4208,8 @@ func exitsyscall0(gp *g) {
 		notewakeup(&sched.sysmonnote)
 	}
 	unlock(&sched.lock)
-	if pp != nil {
-		acquirep(pp)
+	if pp != nil { // 取到 p 了
+		acquirep(pp)       // 将 p 和当前 m 关联起来
 		execute(gp, false) // Never returns.
 	}
 	if locked {
@@ -4198,7 +4220,7 @@ func exitsyscall0(gp *g) {
 		stoplockedm()
 		execute(gp, false) // Never returns.
 	}
-	stopm()
+	stopm()    // 如果没 p, 先停止执行当前 m, 放到sched.midle 里面，直到被唤醒
 	schedule() // Never returns.
 }
 
@@ -5179,6 +5201,8 @@ func procresize(nprocs int32) *p {
 // This function is allowed to have write barriers even if the caller
 // isn't because it immediately acquires pp.
 //
+// 将 p 和当前 m 关联起来
+//
 //go:yeswritebarrierrec
 func acquirep(pp *p) {
 	// Do the part that isn't allowed to have write barriers.
@@ -5770,6 +5794,8 @@ func schedEnableUser(enable bool) {
 // schedEnabled reports whether gp should be scheduled. It returns
 // false is scheduling of gp is disabled.
 //
+// 返回当前 g 是否能被调度
+//
 // sched.lock must be held.
 func schedEnabled(gp *g) bool {
 	assertLockHeld(&sched.lock)
@@ -5814,6 +5840,8 @@ func mget() *m {
 // Put gp on the global runnable queue.
 // sched.lock must be held.
 // May run during STW, so write barriers are not allowed.
+//
+// 将 g 放入全局队列
 //
 //go:nowritebarrierrec
 func globrunqput(gp *g) {
@@ -5988,6 +6016,8 @@ func pidleput(pp *p, now int64) int64 {
 // sched.lock must be held.
 //
 // May run during STW, so write barriers are not allowed.
+//
+// 从 sched.pidle 获取一个空闲的 p
 //
 //go:nowritebarrierrec
 func pidleget(now int64) (*p, int64) {

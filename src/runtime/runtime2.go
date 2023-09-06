@@ -478,7 +478,8 @@ type g struct {
 
 	paniconfault bool // panic (instead of crash) on unexpected fault address
 	gcscandone   bool // g has scanned stack; protected by _Gscan bit in status
-	throwsplit   bool // must not split stack
+	// 在系统调用或者 cgo 的时候，置位 true, 如果被调用到 newstack 来扩展或者复制栈，会抛异常
+	throwsplit bool // must not split stack
 	// activeStackChans indicates that there are unlocked channels
 	// pointing into this goroutine's stack. If true, stack
 	// copying needs to acquire channel locks to protect these
