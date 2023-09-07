@@ -2499,28 +2499,34 @@ func handoffp(pp *p) {
 	// findrunnable would return a G to run on pp.
 
 	// if it has local work, start it straight away
+	// 如果这个 p 本地队列还有 g， 立即启动它
 	if !runqempty(pp) || sched.runqsize != 0 {
 		startm(pp, false, false)
 		return
 	}
 	// if there's trace work to do, start it straight away
+	// 有 trace 要做，启动 p
 	if (trace.enabled || trace.shutdown) && traceReaderAvailable() != nil {
 		startm(pp, false, false)
 		return
 	}
 	// if it has GC work, start it straight away
+	// 有 gc 要做，启动 p
 	if gcBlackenEnabled != 0 && gcMarkWorkAvailable(pp) {
 		startm(pp, false, false)
 		return
 	}
 	// no local work, check that there are no spinning/idle M's,
 	// otherwise our help is not required
+	// 如果没有处于自旋状态的 m， 并且没有处于空闲状态的 m,
+	// 尝试将自己转为自旋状态
 	if sched.nmspinning.Load()+sched.npidle.Load() == 0 && sched.nmspinning.CompareAndSwap(0, 1) { // TODO: fast atomic
 		sched.needspinning.Store(0)
 		startm(pp, true, false)
 		return
 	}
 	lock(&sched.lock)
+	// 如果当前是需要 stop the world，标记自己 stop 了，并且退出
 	if sched.gcwaiting.Load() {
 		pp.status = _Pgcstop
 		sched.stopwait--
@@ -2537,6 +2543,7 @@ func handoffp(pp *p) {
 			notewakeup(&sched.safePointNote)
 		}
 	}
+	// 如果全局队列还有 g, 立即启动
 	if sched.runqsize != 0 {
 		unlock(&sched.lock)
 		startm(pp, false, false)
@@ -2544,6 +2551,7 @@ func handoffp(pp *p) {
 	}
 	// If this is the last running P and nobody is polling network,
 	// need to wakeup another M to poll network.
+	// 如果其他 p 都停了，只剩这个 p 再运行了，并且当前不在轮询网络，启动 p
 	if sched.npidle.Load() == gomaxprocs-1 && sched.lastpoll.Load() != 0 {
 		unlock(&sched.lock)
 		startm(pp, false, false)
@@ -2553,6 +2561,7 @@ func handoffp(pp *p) {
 	// The scheduler lock cannot be held when calling wakeNetPoller below
 	// because wakeNetPoller may call wakep which may call startm.
 	when := nobarrierWakeTime(pp)
+	// 没啥可做的，放进全局空闲 p 队列
 	pidleput(pp, 0)
 	unlock(&sched.lock)
 
@@ -3837,7 +3846,7 @@ func save(pc, sp uintptr) {
 // Note that the increment is done even if tracing is not enabled,
 // because tracing can be enabled in the middle of syscall. We don't want the wait to hang.
 //
-// 标记改 g 处于系统调用状态，
+// 系统调用前，保存现场，流转状态
 //
 //go:nosplit
 func reentersyscall(pc, sp uintptr) {
@@ -3946,24 +3955,30 @@ func entersyscall_gcwait() {
 }
 
 // The same as entersyscall(), but with a hint that the syscall is blocking.
+// 系统调用前，保存现场，流转状态，并且知道自己会阻塞较长时间，主动放弃 p
 //
 //go:nosplit
 func entersyscallblock() {
 	gp := getg()
 
+	// 禁止抢占
 	gp.m.locks++ // see comment in entersyscall
+	// 在 newstack 中，如果发现 throwsplit 是 true 会直接 crash
 	gp.throwsplit = true
+	// 不能调用任何会导致栈增长/分裂的函数
 	gp.stackguard0 = stackPreempt // see comment in entersyscall
 	gp.m.syscalltick = gp.m.p.ptr().syscalltick
 	gp.sysblocktraced = true
 	gp.m.p.ptr().syscalltick++
 
 	// Leave SP around for GC and traceback.
+	// 保存执行现场到 gp.sched 里面,在 syscall 之后会根据这些数据恢复现场
 	pc := getcallerpc()
 	sp := getcallersp()
 	save(pc, sp)
 	gp.syscallsp = gp.sched.sp
 	gp.syscallpc = gp.sched.pc
+	// 如果 syscallsp 不在 g 的栈范围内，抛异常
 	if gp.syscallsp < gp.stack.lo || gp.stack.hi < gp.syscallsp {
 		sp1 := sp
 		sp2 := gp.sched.sp
@@ -3994,6 +4009,7 @@ func entersyscallblock_handoff() {
 		traceGoSysCall()
 		traceGoSysBlock(getg().m.p.ptr())
 	}
+	// 解绑 p，并且把 p 状态改成 _Pidle
 	handoffp(releasep())
 }
 
