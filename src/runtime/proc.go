@@ -1819,17 +1819,21 @@ type cgothreadstart struct {
 // This function is allowed to have write barriers even if the caller
 // isn't because it borrows pp.
 //
+// 分配一个不与任何线程关联的 m,
+// 如果指定了 p,会和 p 绑定
+// fn 作为 m 的开始函数
+//
 //go:yeswritebarrierrec
 func allocm(pp *p, fn func(), id int64) *m {
-	allocmLock.rlock()
+	allocmLock.rlock() // 获取读锁，获取成功说明可以创建 m
 
 	// The caller owns pp, but we may borrow (i.e., acquirep) it. We must
 	// disable preemption to ensure it is not stolen, which would make the
 	// caller lose ownership.
-	acquirem()
+	acquirem() // 禁止抢占
 
 	gp := getg()
-	if gp.m.p == 0 {
+	if gp.m.p == 0 { // 如果当前 m 没有绑定 p, 将参数 pp 和 m 绑定起来
 		acquirep(pp) // temporarily borrow p for mallocs in this function
 	}
 
@@ -1866,22 +1870,22 @@ func allocm(pp *p, fn func(), id int64) *m {
 
 	mp := new(m)
 	mp.mstartfn = fn
-	mcommoninit(mp, id)
+	mcommoninit(mp, id) // 初始化 m
 
 	// In case of cgo or Solaris or illumos or Darwin, pthread_create will make us a stack.
 	// Windows and Plan 9 will layout sched stack on OS stack.
 	if iscgo || mStackIsSystemAllocated() {
 		mp.g0 = malg(-1)
 	} else {
-		mp.g0 = malg(8192 * sys.StackGuardMultiplier)
+		mp.g0 = malg(8192 * sys.StackGuardMultiplier) // 创建 g0, 并且分配 stacksize 的栈空间
 	}
-	mp.g0.m = mp
+	mp.g0.m = mp // 绑定 g0 和 m
 
-	if pp == gp.m.p.ptr() {
-		releasep()
+	if pp == gp.m.p.ptr() { // 如果当前已经绑定了 pp
+		releasep() // 解绑当前绑定的 p，并且把 p 状态改成 _Pidle
 	}
 
-	releasem(gp.m)
+	releasem(gp.m) // 释放旧 m
 	allocmLock.runlock()
 	return mp
 }
@@ -2173,6 +2177,7 @@ var (
 	// allocmLock is locked for read when creating new Ms in allocm and their
 	// addition to allm. Thus acquiring this lock for write blocks the
 	// creation of new Ms.
+	// 创建一个新 m 时会获取读锁，如果获取了写锁，会阻塞 m 的创建
 	allocmLock rwmutex
 
 	// execLock serializes exec and clone to avoid bugs or unspecified
@@ -2214,6 +2219,7 @@ var newmHandoff struct {
 // May run with m.p==nil, so write barriers are not allowed.
 //
 // id is optional pre-allocated m ID. Omit by passing -1.
+// 创建一个 m,
 //
 //go:nowritebarrierrec
 func newm(fn func(), pp *p, id int64) {
@@ -2227,12 +2233,15 @@ func newm(fn func(), pp *p, id int64) {
 	// newm is not preempted between allocm and starting the new thread,
 	// ensuring that anything added to allm is guaranteed to eventually
 	// start.
-	acquirem()
+	acquirem() // 禁止抢占
 
-	mp := allocm(pp, fn, id)
-	mp.nextp.set(pp)
+	mp := allocm(pp, fn, id) // 分配一个 m
+	mp.nextp.set(pp)         // 将 pp 放到 nextp 上面，下次运行
 	mp.sigmask = initSigmask
 	if gp := getg(); gp != nil && gp.m != nil && (gp.m.lockedExt != 0 || gp.m.incgo) && GOOS != "plan9" {
+		// 我们在一个锁定的M或一个可能由c启动的线程上，这个线程的内核状态可能很奇怪(用户可能为此目的锁定了它)。
+		// 我们不想把它克隆到另一个线程中。相反，请一个已知的线程为我们创建线程。
+
 		// We're on a locked M or a thread that may have been
 		// started by C. The kernel state of this thread may
 		// be strange (the user may have locked it for that
@@ -2397,6 +2406,9 @@ func mspinning() {
 //
 // Must not have write barriers because this may be called without a P.
 //
+// 调度一个 m 来运行 p，如果 m 不够用，可能创建一个 M
+// 如果 p == nil, 会尝试获取一个空闲的 p，如果没有空闲的 p, 就啥也不做
+//
 //go:nowritebarrierrec
 func startm(pp *p, spinning, lockheld bool) {
 	// Disable preemption.
@@ -2415,28 +2427,28 @@ func startm(pp *p, spinning, lockheld bool) {
 	// context, otherwise such preemption could occur on function entry to
 	// startm. Callers passing a nil P may be preemptible, so we must
 	// disable preemption before acquiring a P from pidleget below.
-	mp := acquirem()
+	mp := acquirem() // 禁止抢占
 	if !lockheld {
-		lock(&sched.lock)
+		lock(&sched.lock) // 如果没上锁，上一下
 	}
-	if pp == nil {
+	if pp == nil { // 如果没传递 pp
 		if spinning {
 			// TODO(prattmic): All remaining calls to this function
 			// with _p_ == nil could be cleaned up to find a P
 			// before calling startm.
 			throw("startm: P required for spinning=true")
 		}
-		pp, _ = pidleget(0)
+		pp, _ = pidleget(0) // 获取一个空闲的 p
 		if pp == nil {
 			if !lockheld {
 				unlock(&sched.lock)
 			}
-			releasem(mp)
+			releasem(mp) // 释放锁，可以被抢占
 			return
 		}
 	}
-	nmp := mget()
-	if nmp == nil {
+	nmp := mget()   // 获取一个空闲的 m
+	if nmp == nil { // 没有一个可用的 m
 		// No M is available, we must drop sched.lock and call newm.
 		// However, we already own a P to assign to the M.
 		//
@@ -2451,8 +2463,9 @@ func startm(pp *p, spinning, lockheld bool) {
 		// thus marking it as 'running' before we drop sched.lock. This
 		// new M will eventually run the scheduler to execute any
 		// queued G's.
-		id := mReserveID()
-		unlock(&sched.lock)
+		//
+		id := mReserveID()  // 分配一个 m 的 id
+		unlock(&sched.lock) // 释放锁
 
 		var fn func()
 		if spinning {
@@ -5263,7 +5276,7 @@ func wirep(pp *p) {
 }
 
 // Disassociate p and the current m.
-// 解绑 p，并且把 p 状态改成 _Pidle, 返回之前 m 绑定的 p
+// 解绑当前绑定的 p，并且把 p 状态改成 _Pidle, 返回之前 m 绑定的 p
 func releasep() *p {
 	gp := getg()
 
@@ -5841,6 +5854,7 @@ func mput(mp *m) {
 // sched.lock must be held.
 // May run during STW, so write barriers are not allowed.
 //
+// 从 sched.midle 里面获取一个空闲的 m
 //go:nowritebarrierrec
 func mget() *m {
 	assertLockHeld(&sched.lock)
