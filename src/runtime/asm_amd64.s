@@ -275,8 +275,8 @@ needtls:
 	// store through it, to make sure it works
 	// runtime/go_tls.h:10
 	// MOVQ TLS, BX
-	get_tls(BX)
-	MOVQ	$0x123, g(BX)
+	get_tls(BX)  // 将 TLS 赋值到 BX
+	MOVQ	$0x123, g(BX) // 写一个数到 TLS
 	MOVQ	runtime·m0+m_tls(SB), AX
 	CMPQ	AX, $0x123
 	JEQ 2(PC)
@@ -433,25 +433,25 @@ TEXT runtime·mstart(SB),NOSPLIT|TOPFRAME,$0 // 启动 m0
 // func gogo(buf *gobuf)
 // restore state from Gobuf; longjmp
 TEXT runtime·gogo(SB), NOSPLIT, $0-8
-	MOVQ	buf+0(FP), BX		// gobuf
-	MOVQ	gobuf_g(BX), DX
-	MOVQ	0(DX), CX		// make sure g != nil
+	MOVQ	buf+0(FP), BX		// 把 gobuf.sp 赋值到 BX gobuf结构的前8个字节就是SP指针
+	MOVQ	gobuf_g(BX), DX  // 把 gobuf.g 赋值到 DX
+	MOVQ	0(DX), CX		// make sure g != nil ，g 的地址加载到 CX
 	JMP	gogo<>(SB)
 
 TEXT gogo<>(SB), NOSPLIT, $0
-	get_tls(CX)
-	MOVQ	DX, g(CX)
-	MOVQ	DX, R14		// set the g register
-	MOVQ	gobuf_sp(BX), SP	// restore SP
-	MOVQ	gobuf_ret(BX), AX
-	MOVQ	gobuf_ctxt(BX), DX
-	MOVQ	gobuf_bp(BX), BP
-	MOVQ	$0, gobuf_sp(BX)	// clear to help garbage collector
-	MOVQ	$0, gobuf_ret(BX)
-	MOVQ	$0, gobuf_ctxt(BX)
-	MOVQ	$0, gobuf_bp(BX)
-	MOVQ	gobuf_pc(BX), BX
-	JMP	BX
+	get_tls(CX) // // 将 TLS 赋值到 CX
+	MOVQ	DX, g(CX) // 将 gobuf.g 设置到 TLS
+	MOVQ	DX, R14		// set the g register, 将 gobuf.g 设置到 R14
+	MOVQ	gobuf_sp(BX), SP	// restore SP, 将 gobuf.sp 设置到 SP 寄存器
+	MOVQ	gobuf_ret(BX), AX  // 将 gobuf.ret 赋值给 AX
+	MOVQ	gobuf_ctxt(BX), DX // DX = gobuf.ctxt
+	MOVQ	gobuf_bp(BX), BP   // BP = gobuf.bp
+	MOVQ	$0, gobuf_sp(BX)	// clear to help garbage collector gobuf.sp = 0
+	MOVQ	$0, gobuf_ret(BX)   // gobuf.ret = 0
+	MOVQ	$0, gobuf_ctxt(BX)  // gobuf.xtxt = 0
+	MOVQ	$0, gobuf_bp(BX)    // gobuf.bp = 0
+	MOVQ	gobuf_pc(BX), BX    // BX = gobuf.pc
+	JMP	BX  // 开始执行
 
 // func mcall(fn func(*g))
 // Switch to m->g0's stack, call fn(g).
