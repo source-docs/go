@@ -527,7 +527,7 @@ var (
 	// Access via the slice is protected by allglock or stop-the-world.
 	// Readers that cannot take the lock may (carefully!) use the atomic
 	// variables below.
-	// allgs 不会收缩。。。如果因为下游超时开了很多 g, 因为之前的 g 还在跑，每复用，这里会越来越大
+	// allgs 不会收缩。。。如果因为下游超时开了很多 g, 因为之前的 g 还在跑，没有复用，这里会越来越大
 	// 每次 gc、sysmon、死锁检查期间都会进行全局扫描
 	allglock mutex
 	allgs    []*g
@@ -544,7 +544,9 @@ var (
 	// allgptr copies should always be stored as a concrete type or
 	// unsafe.Pointer, not uintptr, to ensure that GC can still reach it
 	// even if it points to a stale array.
+	// all g 的长度，
 	allglen uintptr
+	// all g 的数组开始位置，如果 allg 发生扩容，要保证先改 allgptr 再改 allglen，防止取到旧的 allg 数组，导致溢出
 	allgptr **g
 )
 
@@ -577,6 +579,7 @@ func allGsSnapshot() []*g {
 }
 
 // atomicAllG returns &allgs[0] and len(allgs) for use with atomicAllGIndex.
+// 原子性地找到取到 allg 的数组起始指针，并且返回 allg 长度
 func atomicAllG() (**g, uintptr) {
 	length := atomic.Loaduintptr(&allglen)
 	ptr := (**g)(atomic.Loadp(unsafe.Pointer(&allgptr)))
@@ -603,6 +606,7 @@ func forEachG(fn func(gp *g)) {
 //
 // forEachGRace avoids locking, but does not exclude addition of new Gs during
 // execution, which may be missed.
+// 可以在不加锁的情况下遍历所有 g, 但是遍历期间新创建的 g 可能遍历不到
 func forEachGRace(fn func(gp *g)) {
 	ptr, length := atomicAllG()
 	for i := uintptr(0); i < length; i++ {
@@ -2705,6 +2709,7 @@ func gcstopm() {
 // acquiring a P in several places.
 //
 // 执行一些具体的状态转移、协程g与结构体m之间的绑定等操作
+// 然后直接调用 gogo 开始执行 g
 //
 //go:yeswritebarrierrec
 func execute(gp *g, inheritTime bool) {
@@ -2744,6 +2749,7 @@ func execute(gp *g, inheritTime bool) {
 		traceGoStart()
 	}
 
+	// 切换到该G的栈帧上执行 runtime/asm_amd64.s:441
 	gogo(&gp.sched)
 }
 
@@ -4369,14 +4375,17 @@ func malg(stacksize int32) *g {
 // Create a new g running fn.
 // Put it on the queue of g's waiting to run.
 // The compiler turns a go statement into a call to this.
+// 创建一个运行指定方法的 g
+// 将 g 放到队列里面等待执行
+// 编译器会将 go func() {} 语句改成调用此函数
 func newproc(fn *funcval) {
-	gp := getg()
-	pc := getcallerpc()
+	gp := getg()        // 获取当前 g
+	pc := getcallerpc() // 获取 pc 地址
 	systemstack(func() {
 		newg := newproc1(fn, gp, pc)
 
-		pp := getg().m.p.ptr()
-		runqput(pp, newg, true)
+		pp := getg().m.p.ptr()  // 获取当前 g 绑定的 p
+		runqput(pp, newg, true) // 将 g 放入队列，等待执行
 
 		if mainStarted {
 			wakep()
@@ -4387,17 +4396,21 @@ func newproc(fn *funcval) {
 // Create a new g in state _Grunnable, starting at fn. callerpc is the
 // address of the go statement that created this. The caller is responsible
 // for adding the new g to the scheduler.
+// 创建一个运行 fn 函数的 g, 状态为 _Grunnable
+
 func newproc1(fn *funcval, callergp *g, callerpc uintptr) *g {
 	if fn == nil {
 		fatal("go of nil func value")
 	}
 
-	mp := acquirem() // disable preemption because we hold M and P in local vars.
-	pp := mp.p.ptr()
-	newg := gfget(pp)
-	if newg == nil { // 从本地和全局 g 里面取不到，新建一个
+	// 禁止抢占
+	mp := acquirem()  // disable preemption because we hold M and P in local vars.
+	pp := mp.p.ptr()  // 获取 m 绑定的 p
+	newg := gfget(pp) // 从本地或者全局 gFree 里面取一个 g
+	if newg == nil {  // 从本地和全局 g 里面取不到，新建一个
 		newg = malg(_StackMin)
 		casgstatus(newg, _Gidle, _Gdead)
+		// 将新建的 g 添加到 allg
 		allgadd(newg) // publishes with a g->status of Gdead so GC scanner doesn't look at uninitialized stack.
 	}
 	if newg.stack.hi == 0 {
@@ -4476,7 +4489,7 @@ func newproc1(fn *funcval, callergp *g, callerpc uintptr) *g {
 	if trace.enabled {
 		traceGoCreate(newg, newg.startpc)
 	}
-	releasem(mp)
+	releasem(mp) // 可以被抢占
 
 	return newg
 }
@@ -4561,6 +4574,8 @@ func gfput(pp *p, gp *g) {
 
 // Get from gfree list.
 // If local list is empty, grab a batch from global list.
+// 从 p 的 gFree 里面取一个
+// 如果本地 gFree 空了，会从全局队列里面取一批
 func gfget(pp *p) *g {
 retry:
 	if pp.gFree.empty() && (!sched.gFree.stack.empty() || !sched.gFree.noStack.empty()) {
@@ -5855,6 +5870,7 @@ func mput(mp *m) {
 // May run during STW, so write barriers are not allowed.
 //
 // 从 sched.midle 里面获取一个空闲的 m
+//
 //go:nowritebarrierrec
 func mget() *m {
 	assertLockHeld(&sched.lock)

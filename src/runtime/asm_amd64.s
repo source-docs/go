@@ -451,7 +451,7 @@ TEXT gogo<>(SB), NOSPLIT, $0
 	MOVQ	$0, gobuf_ctxt(BX)  // gobuf.xtxt = 0
 	MOVQ	$0, gobuf_bp(BX)    // gobuf.bp = 0
 	MOVQ	gobuf_pc(BX), BX    // BX = gobuf.pc
-	JMP	BX  // 开始执行
+	JMP	BX  // 开始从 gobuf.pc 开始执行
 
 // func mcall(fn func(*g))
 // Switch to m->g0's stack, call fn(g).
