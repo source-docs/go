@@ -241,7 +241,7 @@ func noescape(p unsafe.Pointer) unsafe.Pointer {
 // pointer-declared arguments.
 func cgocallback(fn, frame, ctxt uintptr)
 
-// 与操作系统有关的函数，用于完成栈的切换及CPU寄存器的恢复。
+// 完成栈的切换及CPU寄存器的恢复，开始执行 g
 func gogo(buf *gobuf)
 
 func asminit()

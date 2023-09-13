@@ -3721,6 +3721,7 @@ func goyield_m(gp *g) {
 }
 
 // Finishes execution of the current goroutine.
+// 当前 goroutine 执行完毕会运行此函数
 func goexit1() {
 	if raceenabled {
 		racegoend()
@@ -3728,7 +3729,7 @@ func goexit1() {
 	if trace.enabled {
 		traceGoEnd()
 	}
-	mcall(goexit0)
+	mcall(goexit0) // 切换到 g0 运行 goexit0
 }
 
 // goexit continuation on g0.
@@ -3736,12 +3737,12 @@ func goexit0(gp *g) {
 	mp := getg().m
 	pp := mp.p.ptr()
 
-	casgstatus(gp, _Grunning, _Gdead)
+	casgstatus(gp, _Grunning, _Gdead) // 状态改成 _Gdead
 	gcController.addScannableStack(pp, -int64(gp.stack.hi-gp.stack.lo))
 	if isSystemGoroutine(gp, false) {
 		sched.ngsys.Add(-1)
 	}
-	gp.m = nil
+	gp.m = nil // g 和 m 解绑
 	locked := gp.lockedm != 0
 	gp.lockedm = 0
 	mp.lockedg = 0
@@ -3753,7 +3754,7 @@ func goexit0(gp *g) {
 	gp.waitreason = waitReasonZero
 	gp.param = nil
 	gp.labels = nil
-	gp.timer = nil
+	gp.timer = nil // 清理各种属性
 
 	if gcBlackenEnabled != 0 && gp.gcAssistBytes > 0 {
 		// Flush assist credit to the global pool. This gives
@@ -3765,7 +3766,7 @@ func goexit0(gp *g) {
 		gp.gcAssistBytes = 0
 	}
 
-	dropg()
+	dropg() // 解绑 m 和当前执行的 g
 
 	if GOARCH == "wasm" { // no threads yet on wasm
 		gfput(pp, gp)
@@ -3776,7 +3777,7 @@ func goexit0(gp *g) {
 		print("invalid m->lockedInt = ", mp.lockedInt, "\n")
 		throw("internal lockOSThread error")
 	}
-	gfput(pp, gp)
+	gfput(pp, gp) // 将 g 放回 gFree 队列，等待复用
 	if locked {
 		// The goroutine may have locked this thread because
 		// it put it in an unusual kernel state. Kill it
@@ -3792,7 +3793,7 @@ func goexit0(gp *g) {
 			mp.lockedExt = 0
 		}
 	}
-	schedule()
+	schedule() // 进行下一轮调度循环
 }
 
 // save updates getg().sched to refer to pc and sp so that a following
@@ -4530,7 +4531,7 @@ func saveAncestors(callergp *g) *[]ancestorInfo {
 
 // Put on gfree list.
 // If local list is too long, transfer a batch to the global list.
-// 将 g 加入到 p 的本地缓存队列，如果本地队列太长(>64)，会 copy 32 个到全局
+// 将 g 加入到 p 的 gFree 队列，如果本地队列太长(>64)，会 copy 32 个到全局
 func gfput(pp *p, gp *g) {
 	if readgstatus(gp) != _Gdead {
 		throw("gfput: bad status (not Gdead)")

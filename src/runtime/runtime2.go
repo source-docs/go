@@ -499,21 +499,22 @@ type g struct {
 	sysexitticks   int64    // cputicks when syscall has returned (for tracing)
 	traceseq       uint64   // trace event sequencer
 	tracelastp     puintptr // last P emitted an event for this goroutine
-	lockedm        muintptr
+	lockedm        muintptr // 当前 g 是否锁定了当前 m
 	sig            uint32
 	writebuf       []byte
 	sigcode0       uintptr
 	sigcode1       uintptr
 	sigpc          uintptr
-	gopc           uintptr         // pc of go statement that created this goroutine
-	ancestors      *[]ancestorInfo // ancestor information goroutine(s) that created this goroutine (only used if debug.tracebackancestors)
-	startpc        uintptr         // pc of goroutine function
-	racectx        uintptr
-	waiting        *sudog         // sudog structures this g is waiting on (that have a valid elem ptr); in lock order
-	cgoCtxt        []uintptr      // cgo traceback context
-	labels         unsafe.Pointer // profiler labels
-	timer          *timer         // cached timer for time.Sleep
-	selectDone     atomic.Uint32  // are we participating in a select and did someone win the race?
+	// 创建 g 的语句的 pc
+	gopc       uintptr         // pc of go statement that created this goroutine
+	ancestors  *[]ancestorInfo // ancestor information goroutine(s) that created this goroutine (only used if debug.tracebackancestors)
+	startpc    uintptr         // pc of goroutine function
+	racectx    uintptr
+	waiting    *sudog         // sudog structures this g is waiting on (that have a valid elem ptr); in lock order
+	cgoCtxt    []uintptr      // cgo traceback context
+	labels     unsafe.Pointer // profiler labels
+	timer      *timer         // cached timer for time.Sleep
+	selectDone atomic.Uint32  // are we participating in a select and did someone win the race?
 
 	// goroutineProfiled indicates the status of this goroutine's stack for the
 	// current in-progress goroutine profile
@@ -833,6 +834,7 @@ type schedt struct {
 	nmsys     int32 // number of system m's not counted for deadlock
 	nmfreed   int64 // cumulative number of freed m's
 
+	// 系统 g 的数量
 	ngsys atomic.Int32 // number of system goroutines
 
 	pidle  puintptr     // idle p's  没有运行用户代码或者调度器 的 p 链表，处于  _Pidle 状态

@@ -1630,6 +1630,8 @@ TEXT _cgo_topofstack(SB),NOSPLIT,$0
 
 // The top-most function running on a goroutine
 // returns to goexit+PCQuantum.
+// goroutine上运行的最顶层函数
+//
 TEXT runtime·goexit(SB),NOSPLIT|TOPFRAME,$0-0
 	BYTE	$0x90	// NOP
 	CALL	runtime·goexit1(SB)	// does not return
