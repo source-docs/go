@@ -368,7 +368,7 @@ func gopark(unlockf func(*g, unsafe.Pointer) bool, lock unsafe.Pointer, reason w
 	if reason != waitReasonSleep {
 		checkTimeouts() // timeouts may expire while two goroutines keep the scheduler busy
 	}
-	mp := acquirem()
+	mp := acquirem() // 禁止抢占
 	gp := mp.curg
 	status := readgstatus(gp)
 	if status != _Grunning && status != _Gscanrunning {
@@ -379,8 +379,9 @@ func gopark(unlockf func(*g, unsafe.Pointer) bool, lock unsafe.Pointer, reason w
 	gp.waitreason = reason
 	mp.waittraceev = traceEv
 	mp.waittraceskip = traceskip
-	releasem(mp)
+	releasem(mp) // 开启抢占
 	// can't do anything that might move the G between Ms here.
+	// 切换到 g0 运行 park_m 方法
 	mcall(park_m)
 }
 
@@ -3427,6 +3428,7 @@ func injectglist(glist *gList) {
 }
 
 // One round of scheduler: find a runnable goroutine and execute it.
+// 进行下一轮调度循环
 // 处理具体的调度策略，选择下一个要执行的协程
 // Never returns.
 func schedule() {
@@ -3597,14 +3599,14 @@ func park_m(gp *g) {
 
 	// N.B. Not using casGToWaiting here because the waitreason is
 	// set by park_m's caller.
-	casgstatus(gp, _Grunning, _Gwaiting)
-	dropg()
+	casgstatus(gp, _Grunning, _Gwaiting) // 状态改为 _Gwaiting
+	dropg()                              // 解绑 m 和当前执行的 g
 
 	if fn := mp.waitunlockf; fn != nil {
 		ok := fn(gp, mp.waitlock)
 		mp.waitunlockf = nil
 		mp.waitlock = nil
-		if !ok {
+		if !ok { // 如果不需要等待解锁，则切换到 _Grunnable 状态并直接执行 g
 			if trace.enabled {
 				traceGoUnpark(gp, 2)
 			}
@@ -3612,7 +3614,7 @@ func park_m(gp *g) {
 			execute(gp, true) // Schedule it back, never returns.
 		}
 	}
-	schedule()
+	schedule() // 开始下一轮调度
 }
 
 func goschedImpl(gp *g) {
