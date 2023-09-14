@@ -382,7 +382,7 @@ func preemptM(mp *m) {
 		// live-lock problem. Apparently this could happen on darwin. See
 		// issue #37741.
 		// Only send a signal if there isn't already one pending.
-		signalM(mp, sigPreempt)
+		signalM(mp, sigPreempt) // 给 m 发一个抢占信号 信号处理在 runtime/signal_unix.go:341
 	}
 
 	if GOOS == "darwin" || GOOS == "ios" {

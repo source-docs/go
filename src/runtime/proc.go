@@ -133,7 +133,7 @@ var main_init_done chan bool
 func main_main()
 
 // mainStarted indicates that the main M has started.
-// m0 是否已经启动
+// m0 是否已经启动, 在 runtime.main 里面改为 true
 var mainStarted bool
 
 // runtimeInitTime is the nanotime() at which the runtime started.
@@ -170,7 +170,7 @@ func main() {
 
 	if GOARCH != "wasm" { // no threads on wasm yet, so no sysmon
 		systemstack(func() {
-			newm(sysmon, nil, -1)
+			newm(sysmon, nil, -1) // 启动监控任务
 		})
 	}
 
@@ -5446,15 +5446,17 @@ var needSysmonWorkaround bool = false
 //go:nowritebarrierrec
 func sysmon() {
 	lock(&sched.lock)
-	sched.nmsys++
+	sched.nmsys++ // 系统 g 数量 +1
 	checkdead()
 	unlock(&sched.lock)
 
 	lasttrace := int64(0)
 	idle := 0 // how many cycles in succession we had not wokeup somebody
+	// 用于控制for循环的间隔
 	delay := uint32(0)
 
 	for {
+		// 前50次每次sleep 20微秒，超过50次则每次翻2倍，直到最大10毫秒
 		if idle == 0 { // start with 20us sleep...
 			delay = 20
 		} else if idle > 50 { // start doubling the sleep after 1ms...
@@ -5526,6 +5528,7 @@ func sysmon() {
 		}
 		// poll network if not polled for more than 10ms
 		lastpoll := sched.lastpoll.Load()
+		// 如果超过 10ms 没有轮询网络
 		if netpollinited() && lastpoll != 0 && lastpoll+10*1000*1000 < now {
 			sched.lastpoll.CompareAndSwap(lastpoll, now)
 			list := netpoll(0) // non-blocking - returns list of goroutines
@@ -5568,10 +5571,12 @@ func sysmon() {
 		}
 		// retake P's blocked in syscalls
 		// and preempt long running G's
+		// 夺回系统调用中的 p
+		// 并且抢占长时间运行的 g
 		if retake(now) != 0 {
-			idle = 0
+			idle = 0 // 如果抢占到了，重置 idle
 		} else {
-			idle++
+			idle++ // 没有抢占到，增加轮询延迟
 		}
 		// check if we need to force a GC
 		if t := (gcTrigger{kind: gcTriggerTime, now: now}); t.test() && forcegc.idle.Load() {
@@ -5591,7 +5596,9 @@ func sysmon() {
 }
 
 type sysmontick struct {
-	schedtick   uint32
+	// sysmon 上次检查的时候 p 的调度次数
+	schedtick uint32
+	// sysmon 上次检查的时间
 	schedwhen   int64
 	syscalltick uint32
 	syscallwhen int64
@@ -5599,8 +5606,11 @@ type sysmontick struct {
 
 // forcePreemptNS is the time slice given to a G before it is
 // preempted.
+// 超过此时间，会被抢占
 const forcePreemptNS = 10 * 1000 * 1000 // 10ms
 
+// 夺回系统调用中的 p
+// 并且抢占长时间运行的 g
 func retake(now int64) uint32 {
 	n := 0
 	// Prevent allp slice changes. This lock will be completely
@@ -5609,11 +5619,12 @@ func retake(now int64) uint32 {
 	// We can't use a range loop over allp because we may
 	// temporarily drop the allpLock. Hence, we need to re-fetch
 	// allp each time around the loop.
-	for i := 0; i < len(allp); i++ {
+	for i := 0; i < len(allp); i++ { // 遍历所有 p
 		pp := allp[i]
 		if pp == nil {
 			// This can happen if procresize has grown
 			// allp but not yet created new Ps.
+			// 进程已经扩容了 allp, 但是还没创建好新的 p
 			continue
 		}
 		pd := &pp.sysmontick
@@ -5623,9 +5634,13 @@ func retake(now int64) uint32 {
 			// Preempt G if it's running for too long.
 			t := int64(pp.schedtick)
 			if int64(pd.schedtick) != t {
+				// 如果 pp.sysmontick 里面保存的 schedtick 不等于 g 现在的 schedtick
+				// 说明已经发生过调度。刷新最新的 调度次数和调度时间
 				pd.schedtick = uint32(t)
 				pd.schedwhen = now
 			} else if pd.schedwhen+forcePreemptNS <= now {
+				// 如果上次检查以来，没有发生过调度，检查运行时间是否超过 forcePreemptNS
+				// 超过则进行抢占
 				preemptone(pp)
 				// In case of syscall, preemptone() doesn't
 				// work, because there is no M wired to P.
@@ -5700,25 +5715,26 @@ func preemptall() bool {
 // Grunning
 func preemptone(pp *p) bool {
 	mp := pp.m.ptr()
-	if mp == nil || mp == getg().m {
+	if mp == nil || mp == getg().m { // 如果当前 m 和要抢占的 p 绑定的 m 一样，不抢占
 		return false
 	}
 	gp := mp.curg
-	if gp == nil || gp == mp.g0 {
+	if gp == nil || gp == mp.g0 { // 如果发现当前运行的是 g0, 不抢占
 		return false
 	}
 
+	// 标记 g 应该被抢占
 	gp.preempt = true
 
 	// Every call in a goroutine checks for stack overflow by
 	// comparing the current stack pointer to gp->stackguard0.
 	// Setting gp->stackguard0 to StackPreempt folds
 	// preemption into the normal stack overflow check.
-	gp.stackguard0 = stackPreempt
+	gp.stackguard0 = stackPreempt // 每次函数调用会检查是否抢占
 
 	// Request an async preemption of this P.
 	if preemptMSupported && debug.asyncpreemptoff == 0 {
-		pp.preempt = true
+		pp.preempt = true // 标记 p 要被抢占
 		preemptM(mp)
 	}
 

@@ -567,6 +567,7 @@ func getpid() int
 func tgkill(tgid, tid, sig int)
 
 // signalM sends a signal to mp.
+// 给 m 发一个信号
 func signalM(mp *m, sig int) {
 	tgkill(getpid(), int(mp.procid), sig)
 }

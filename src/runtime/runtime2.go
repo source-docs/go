@@ -467,6 +467,7 @@ type g struct {
 	waitsince    int64      // approx time when the g become blocked
 	waitreason   waitReason // if status==Gwaiting
 
+	// 标记当前 g 是否应该被抢占
 	preempt       bool // preemption signal, duplicates stackguard0 = stackpreempt
 	preemptStop   bool // transition to _Gpreempted on preemption; otherwise, just deschedule
 	preemptShrink bool // shrink stack at synchronous safe point
@@ -635,6 +636,7 @@ type m struct {
 	preemptGen atomic.Uint32
 
 	// Whether this is a pending preemption signal on this M.
+	// m 上是否有一个待处理的抢占信号
 	signalPending atomic.Uint32
 
 	dlogPerM
@@ -909,6 +911,7 @@ type schedt struct {
 	//
 	// Acquire and hold this mutex to block sysmon from interacting
 	// with the rest of the runtime.
+	// 保护 sysmon 运行逻辑的锁
 	sysmonlock mutex
 
 	// timeToRun is a distribution of scheduling latencies, defined
