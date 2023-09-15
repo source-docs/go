@@ -468,7 +468,8 @@ type g struct {
 	waitreason   waitReason // if status==Gwaiting
 
 	// 标记当前 g 是否应该被抢占
-	preempt       bool // preemption signal, duplicates stackguard0 = stackpreempt
+	preempt bool // preemption signal, duplicates stackguard0 = stackpreempt
+	// gc 抢占停止所有 g
 	preemptStop   bool // transition to _Gpreempted on preemption; otherwise, just deschedule
 	preemptShrink bool // shrink stack at synchronous safe point
 

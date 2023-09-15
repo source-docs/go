@@ -1021,12 +1021,12 @@ func newstack() {
 	// it needs a lock held by the goroutine), that small preemption turns
 	// into a real deadlock.
 	preempt := stackguard0 == stackPreempt
-	if preempt {
-		if !canPreemptM(thisg.m) {
+	if preempt { // 如果被标记抢占
+		if !canPreemptM(thisg.m) { // 如果 m 不能抢占
 			// Let the goroutine keep running for now.
 			// gp->preempt is set, so it will be preempted next time.
 			gp.stackguard0 = gp.stack.lo + _StackGuard
-			gogo(&gp.sched) // never return
+			gogo(&gp.sched) // never return // 继续运行
 		}
 	}
 
@@ -1049,7 +1049,7 @@ func newstack() {
 		throw("runtime: split stack overflow")
 	}
 
-	if preempt {
+	if preempt { // 如果被标记抢占
 		if gp == thisg.m.g0 {
 			throw("runtime: preempt g0")
 		}
@@ -1064,7 +1064,7 @@ func newstack() {
 			shrinkstack(gp)
 		}
 
-		if gp.preemptStop {
+		if gp.preemptStop { // gc 发起的抢占
 			preemptPark(gp) // never returns
 		}
 

@@ -293,6 +293,9 @@ func canPreemptM(mp *m) bool {
 //
 // When stack scanning encounters an asyncPreempt frame, it scans that
 // frame and its parent frame conservatively.
+
+// 保存所有用户寄存器，并且调用 asyncPreempt2
+// 异步调度，由信号触发
 //
 // asyncPreempt is implemented in assembly.
 func asyncPreempt()
@@ -301,9 +304,11 @@ func asyncPreempt()
 func asyncPreempt2() {
 	gp := getg()
 	gp.asyncSafePoint = true
-	if gp.preemptStop {
-		mcall(preemptPark)
+	if gp.preemptStop { // gc 抢占停止所有 g
+		mcall(preemptPark) // gc 抢占停止所有 g
 	} else {
+		// 将 g 状态由改成 _Grunnable
+		// 解绑 m 和当前执行的 g, 放入全局队列
 		mcall(gopreempt_m)
 	}
 	gp.asyncSafePoint = false
@@ -338,6 +343,7 @@ func init() {
 
 // wantAsyncPreempt returns whether an asynchronous preemption is
 // queued for gp.
+// 是否要被抢占
 func wantAsyncPreempt(gp *g) bool {
 	// Check both the G and the P.
 	return (gp.preempt || gp.m.p != 0 && gp.m.p.ptr().preempt) && readgstatus(gp)&^_Gscan == _Grunning

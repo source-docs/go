@@ -318,6 +318,7 @@ func forcegchelper() {
 
 // Gosched yields the processor, allowing other goroutines to run. It does not
 // suspend the current goroutine, so execution resumes automatically.
+// 放弃当前 p, 允许其他 g 执行，它不会挂起当前 g, 会自动恢复
 func Gosched() {
 	checkTimeouts()
 	mcall(gosched_m)
@@ -341,8 +342,10 @@ func goschedIfBusy() {
 	// Call gosched if gp.preempt is set; we may be in a tight loop that
 	// doesn't otherwise yield.
 	if !gp.preempt && sched.npidle.Load() > 0 {
-		return
+		return // 如果不能被抢占，并且空闲 p > 0
 	}
+	// 将 g 状态由改成 _Grunnable
+	// 解绑 m 和当前执行的 g, 放入全局队列
 	mcall(gosched_m)
 }
 
@@ -3617,6 +3620,8 @@ func park_m(gp *g) {
 	schedule() // 开始下一轮调度
 }
 
+// 将 g 状态由改成 _Grunnable
+// 解绑 m 和当前执行的 g, 放入全局队列
 func goschedImpl(gp *g) {
 	status := readgstatus(gp)
 	if status&^_Gscan != _Grunning {
@@ -3637,6 +3642,8 @@ func goschedImpl(gp *g) {
 
 // Gosched continuation on g0.
 // Gosched 的 g0 栈部分逻辑
+// 将 g 状态由改成 _Grunnable
+// 解绑 m 和当前执行的 g, 放入全局队列
 func gosched_m(gp *g) {
 	if trace.enabled {
 		traceGoSched()
@@ -3657,10 +3664,14 @@ func goschedguarded_m(gp *g) {
 	goschedImpl(gp)
 }
 
+// 将 g 状态由改成 _Grunnable
+// 解绑 m 和当前执行的 g, 放入全局队列
 func gopreempt_m(gp *g) {
 	if trace.enabled {
 		traceGoPreempt()
 	}
+	// 将 g 状态由改成 _Grunnable
+	// 解绑 m 和当前执行的 g, 放入全局队列
 	goschedImpl(gp)
 }
 
