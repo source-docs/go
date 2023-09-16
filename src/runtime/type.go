@@ -33,6 +33,7 @@ const (
 // ../reflect/type.go:/^type.rtype.
 // ../internal/reflectlite/type.go:/^type.rtype.
 type _type struct {
+	// 该类型占用的空间
 	size       uintptr
 	ptrdata    uintptr // size of memory prefix holding all pointers
 	hash       uint32
@@ -359,18 +360,22 @@ type maptype struct {
 	elem   *_type
 	bucket *_type // internal type representing a hash bucket
 	// function for hashing keys (ptr to key, seed) -> hash
-	hasher     func(unsafe.Pointer, uintptr) uintptr
-	keysize    uint8  // size of key slot
-	elemsize   uint8  // size of elem slot
+	hasher   func(unsafe.Pointer, uintptr) uintptr
+	keysize  uint8 // size of key slot
+	elemsize uint8 // size of elem slot
+	// 桶的大小，单位 byte
 	bucketsize uint16 // size of bucket
 	flags      uint32
 }
 
 // Note: flag values must match those used in the TMAP case
 // in ../cmd/compile/internal/reflectdata/reflect.go:writeType.
+// 是否存储了 key 的指针，而不是 key 本身
 func (mt *maptype) indirectkey() bool { // store ptr to key instead of key itself
 	return mt.flags&1 != 0
 }
+
+// 是否存储的是 elem 的指针，而不是值
 func (mt *maptype) indirectelem() bool { // store ptr to elem instead of elem itself
 	return mt.flags&2 != 0
 }

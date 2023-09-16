@@ -8,6 +8,7 @@ import (
 	"internal/cpu"
 )
 
+// 是否支持 AVX 指令集
 var useAVXmemmove bool
 
 func init() {

@@ -32,13 +32,15 @@
 
 // func memmove(to, from unsafe.Pointer, n uintptr)
 // ABIInternal for performance.
+// 从 BX 复制 CX 个字节数据到 AX
 TEXT runtime·memmove<ABIInternal>(SB), NOSPLIT, $0-24
 	// AX = to
 	// BX = from
 	// CX = n
-	MOVQ	AX, DI
-	MOVQ	BX, SI
-	MOVQ	CX, BX
+	// 传输 64 位数据
+	MOVQ	AX, DI // DI = AX(to)
+	MOVQ	BX, SI // SI = BX(from)
+	MOVQ	CX, BX // BX = CX(n)
 
 	// REP instructions have a high startup cost, so we handle small sizes
 	// with some straightline code. The REP MOVSQ instruction is really fast
@@ -52,41 +54,41 @@ tail:
 	//
 	// BSR+branch table make almost all memmove/memclr benchmarks worse. Not worth doing.
 	TESTQ	BX, BX
-	JEQ	move_0
+	JEQ	move_0 // 如果 BX (n) 为 0， 跳转到 move_0
 	CMPQ	BX, $2
-	JBE	move_1or2
+	JBE	move_1or2 // 如果 BX (n) 小于等于 2，跳转到 move_1or2
 	CMPQ	BX, $4
-	JB	move_3
-	JBE	move_4
+	JB	move_3 // 如果 BX (n) 小于 4，跳转 move_3
+	JBE	move_4 // 如果 BX (n) 小于等于 4，跳转 move_4
 	CMPQ	BX, $8
-	JB	move_5through7
-	JE	move_8
+	JB	move_5through7 // 如果 BX (n) 小于 8, 跳转 move_5through7
+	JE	move_8 // 如果  BX (n) 小于等于 8，跳转 move_8
 	CMPQ	BX, $16
-	JBE	move_9through16
+	JBE	move_9through16  // 如果  BX (n) 小于等于 16，跳转 move_9through16
 	CMPQ	BX, $32
-	JBE	move_17through32
+	JBE	move_17through32 // 如果 BX (n) 小于等于 32，跳转到 move_17through32
 	CMPQ	BX, $64
-	JBE	move_33through64
+	JBE	move_33through64 // 如果 BX (n) 小于等于 64，跳转到 move_33through64
 	CMPQ	BX, $128
-	JBE	move_65through128
+	JBE	move_65through128 // 如果 BX (n) 小于等于 128, 跳转到 move_65through128
 	CMPQ	BX, $256
-	JBE	move_129through256
+	JBE	move_129through256 // 如果 BX (n) 小于等于 256, 跳转到 move_129through256
 
 	TESTB	$1, runtime·useAVXmemmove(SB)
-	JNZ	avxUnaligned
+	JNZ	avxUnaligned // 如果 runtime·useAVXmemmove 等于 1
 
 /*
  * check and set for backwards
  */
 	CMPQ	SI, DI
-	JLS	back
+	JLS	back // 如果 SI(BX, from) < DI(AX, to), 跳转 back
 
 /*
  * forward copy loop
  */
 forward:
 	CMPQ	BX, $2048
-	JLS	move_256through2048
+	JLS	move_256through2048 // 如果 BX (n) < 2048, 跳转到 move_256through2048
 
 	// If REP MOVSB isn't fast, don't use it
 	CMPB	internal∕cpu·X86+const_offsetX86HasERMS(SB), $1 // enhanced REP MOVSB/STOSB
@@ -105,10 +107,13 @@ forward:
 
 fwdBy8:
 	// Do 8 bytes at a time
-	MOVQ	BX, CX
-	SHRQ	$3, CX
-	ANDQ	$7, BX
-	REP;	MOVSQ
+	MOVQ	BX, CX  // 将 BX (n)，移动到 CX
+	SHRQ	$3, CX // CX = CX / 8
+	ANDQ	$7, BX // BX 限制在 7 以内
+	// RSI 寄存器：源地址，指向要移动的字符串的起始位置。
+    // RDI 寄存器：目标地址，指向要移动到的字符串的起始位置。
+    // RCX 寄存器：循环计数器，表示要移动的数据块的数量除以 8。
+	REP;	MOVSQ // 循环将 SI 寄存器的数据复制到 DI, 循环次数为 CX
 	JMP	tail
 
 back:
@@ -146,45 +151,45 @@ back:
 	JMP	tail
 
 move_1or2:
-	MOVB	(SI), AX
-	MOVB	-1(SI)(BX*1), CX
-	MOVB	AX, (DI)
-	MOVB	CX, -1(DI)(BX*1)
+	MOVB	(SI), AX // 将源地址 SI 的一个字节复制到 AX, AX = SI[0] // 8 位操作
+	MOVB	-1(SI)(BX*1), CX // 将 CX = SI[BX - 1]
+	MOVB	AX, (DI) // DI[0] = AX
+	MOVB	CX, -1(DI)(BX*1) // DI[BX - 1] = CX
 	RET
 move_0:
-	RET
+	RET // 直接返回
 move_4:
-	MOVL	(SI), AX
-	MOVL	AX, (DI)
+	MOVL	(SI), AX  // AX = *(SI)  // 32 位操作
+	MOVL	AX, (DI) // *(DI) = AX
 	RET
 move_3:
-	MOVW	(SI), AX
-	MOVB	2(SI), CX
-	MOVW	AX, (DI)
-	MOVB	CX, 2(DI)
+	MOVW	(SI), AX // AX = *(SI) // 16 位操作
+	MOVB	2(SI), CX // CX = *(SI + 2) // 8 位操作
+	MOVW	AX, (DI) // *(DI) = AX  // 16 位操作
+	MOVB	CX, 2(DI)  // *(DI + 2) = CX // 8位
 	RET
 move_5through7:
-	MOVL	(SI), AX
-	MOVL	-4(SI)(BX*1), CX
-	MOVL	AX, (DI)
-	MOVL	CX, -4(DI)(BX*1)
+	MOVL	(SI), AX // AX = *(SI)  32 位操作
+	MOVL	-4(SI)(BX*1), CX  // CX = *(SI + BX + 1 - 4)  BX >=5, 覆盖 copy 一次
+	MOVL	AX, (DI)          // *(DI) = AX
+	MOVL	CX, -4(DI)(BX*1)   // (DI + BX - 4) = CX
 	RET
 move_8:
 	// We need a separate case for 8 to make sure we write pointers atomically.
-	MOVQ	(SI), AX
-	MOVQ	AX, (DI)
+	MOVQ	(SI), AX // AX = *(SI)  64 位操作
+	MOVQ	AX, (DI) // *(DI) = AX  64 位操作
 	RET
 move_9through16:
-	MOVQ	(SI), AX
-	MOVQ	-8(SI)(BX*1), CX
-	MOVQ	AX, (DI)
-	MOVQ	CX, -8(DI)(BX*1)
+	MOVQ	(SI), AX         // AX = *(SI)
+	MOVQ	-8(SI)(BX*1), CX  // CX = *(SI + BX - 8)   BX > 8
+	MOVQ	AX, (DI)          // *(DI) = AX
+	MOVQ	CX, -8(DI)(BX*1)  // *(DI + BX - 8) = CX    BX > 8
 	RET
 move_17through32:
-	MOVOU	(SI), X0
-	MOVOU	-16(SI)(BX*1), X1
-	MOVOU	X0, (DI)
-	MOVOU	X1, -16(DI)(BX*1)
+	MOVOU	(SI), X0           // X0 = *(SI)
+	MOVOU	-16(SI)(BX*1), X1  // X1 = *(SI + BX - 16)
+	MOVOU	X0, (DI)           // *(DI) = X0
+	MOVOU	X1, -16(DI)(BX*1)  // *(DI + BX -16) = X1
 	RET
 move_33through64:
 	MOVOU	(SI), X0
@@ -251,7 +256,7 @@ move_129through256:
 	PXOR	X15, X15
 	RET
 move_256through2048:
-	SUBQ	$256, BX
+	SUBQ	$256, BX   // BX(n) -= 256
 	MOVOU	(SI), X0
 	MOVOU	16(SI), X1
 	MOVOU	32(SI), X2
@@ -285,9 +290,9 @@ move_256through2048:
 	MOVOU	X14, 224(DI)
 	MOVOU	X15, 240(DI)
 	CMPQ	BX, $256
-	LEAQ	256(SI), SI
-	LEAQ	256(DI), DI
-	JGE	move_256through2048
+	LEAQ	256(SI), SI  // SI = *(SI + 256)
+	LEAQ	256(DI), DI  // DI = *(DI + 256)
+	JGE	move_256through2048  if BX > 256
 	// X15 must be zero on return
 	PXOR	X15, X15
 	JMP	tail
