@@ -696,7 +696,7 @@ bucketloop:
 		for i := uintptr(0); i < bucketCnt; i++ {
 			if b.tophash[i] != top { // 如果 tophash 和
 				if isEmpty(b.tophash[i]) && inserti == nil {
-					// 如果这个位置是空的，并且没有插入
+					// 如果找到了一个空的位置， 并且还没有插入
 					// inserti 是对应 tophash 的位置
 					inserti = &b.tophash[i]
 					// insertk 是对应 key 的位置
@@ -704,7 +704,7 @@ bucketloop:
 					// elem 是对应 value 的位置
 					elem = add(unsafe.Pointer(b), dataOffset+bucketCnt*uintptr(t.keysize)+i*uintptr(t.elemsize))
 				}
-				//
+				// 找到第一个为 0 的地方，跳出循环
 				if b.tophash[i] == emptyRest {
 					break bucketloop
 				}
@@ -735,6 +735,7 @@ bucketloop:
 		}
 		b = ovf
 	}
+	// 没找到值，插入
 
 	// Did not find mapping for key. Allocate new cell & add entry.
 
@@ -781,6 +782,7 @@ done:
 	return elem
 }
 
+// 根据 key 删除键值对
 func mapdelete(t *maptype, h *hmap, key unsafe.Pointer) {
 	if raceenabled && h != nil {
 		callerpc := getcallerpc()
@@ -796,11 +798,12 @@ func mapdelete(t *maptype, h *hmap, key unsafe.Pointer) {
 	}
 	if h == nil || h.count == 0 {
 		if t.hashMightPanic() {
+			// 保证空 map 删除的时候传入了一个不能 hash 的 key, 一定会 panic
 			t.hasher(key, 0) // see issue 23734
 		}
 		return
 	}
-	if h.flags&hashWriting != 0 {
+	if h.flags&hashWriting != 0 { // 另一个 g 在写
 		fatal("concurrent map writes")
 	}
 
@@ -808,76 +811,92 @@ func mapdelete(t *maptype, h *hmap, key unsafe.Pointer) {
 
 	// Set hashWriting after calling t.hasher, since t.hasher may panic,
 	// in which case we have not actually done a write (delete).
-	h.flags ^= hashWriting
+	h.flags ^= hashWriting // 设置写标记
 
+	// 找到对应的桶索引
 	bucket := hash & bucketMask(h.B)
+	// 如果正在扩容
 	if h.growing() {
 		growWork(t, h, bucket)
 	}
+	// 找到对应的 bmap 位置
 	b := (*bmap)(add(h.buckets, bucket*uintptr(t.bucketsize)))
+	// 原始桶位置
 	bOrig := b
+	// 拿到 hash 的高八位
 	top := tophash(hash)
 search:
-	for ; b != nil; b = b.overflow(t) {
+	for ; b != nil; b = b.overflow(t) { // 沿着溢出桶向后查找
+		// 遍历桶里面的 8 个 key
 		for i := uintptr(0); i < bucketCnt; i++ {
 			if b.tophash[i] != top {
+				// 如果 tophash 不匹配
+				// 然后找到了一个 emptyRest，停止查找
 				if b.tophash[i] == emptyRest {
 					break search
 				}
-				continue
+				continue // 还没到 emptyRest， 继续查找
 			}
+			// 如果 tophash 匹配成功
+			// 根据偏移，找到对应的 key 地址
 			k := add(unsafe.Pointer(b), dataOffset+i*uintptr(t.keysize))
 			k2 := k
-			if t.indirectkey() {
+			if t.indirectkey() { // 如果 key 存储为指针形式
 				k2 = *((*unsafe.Pointer)(k2))
 			}
+			// 如果 key 不匹配，继续找
 			if !t.key.equal(key, k2) {
 				continue
 			}
+			// 找到了对应的 key
 			// Only clear key if there are pointers in it.
-			if t.indirectkey() {
+			if t.indirectkey() { // 如果存储的是指针，设置为 nil
 				*(*unsafe.Pointer)(k) = nil
 			} else if t.key.ptrdata != 0 {
 				memclrHasPointers(k, t.key.size)
 			}
+			// 拿到 elem 对应的位置
 			e := add(unsafe.Pointer(b), dataOffset+bucketCnt*uintptr(t.keysize)+i*uintptr(t.elemsize))
-			if t.indirectelem() {
-				*(*unsafe.Pointer)(e) = nil
+			if t.indirectelem() { // 如果 value 存储的是指针
+				*(*unsafe.Pointer)(e) = nil // 清空
 			} else if t.elem.ptrdata != 0 {
 				memclrHasPointers(e, t.elem.size)
 			} else {
 				memclrNoHeapPointers(e, t.elem.size)
 			}
+			// 把 tophash 置为 1
 			b.tophash[i] = emptyOne
 			// If the bucket now ends in a bunch of emptyOne states,
 			// change those to emptyRest states.
 			// It would be nice to make this a separate function, but
 			// for loops are not currently inlineable.
-			if i == bucketCnt-1 {
+			if i == bucketCnt-1 { // 如果这是桶的最后一个元素
+				// 如果这个桶后面还有溢出桶，并且溢出桶的第一个元素不是 0
 				if b.overflow(t) != nil && b.overflow(t).tophash[0] != emptyRest {
-					goto notLast
+					goto notLast // 不是最后一个
 				}
-			} else {
+			} else { // 如果这不是桶的最后一个元素
+				// 并且下一个元素是 0
 				if b.tophash[i+1] != emptyRest {
-					goto notLast
+					goto notLast // 不是最后一个
 				}
 			}
-			for {
-				b.tophash[i] = emptyRest
-				if i == 0 {
-					if b == bOrig {
+			for { // 这个循环是最后一个
+				b.tophash[i] = emptyRest // 将这个元素 tophash 改为 0
+				if i == 0 {              // 如果是第一个元素
+					if b == bOrig { // 如果当前元素所在位置是在第一层桶，退出处理
 						break // beginning of initial bucket, we're done.
 					}
 					// Find previous bucket, continue at its last entry.
 					c := b
 					for b = bOrig; b.overflow(t) != c; b = b.overflow(t) {
-					}
-					i = bucketCnt - 1
+					} // 找到上一层的溢出桶
+					i = bucketCnt - 1 // 从最后一个开始
 				} else {
-					i--
+					i-- // 往上找
 				}
 				if b.tophash[i] != emptyOne {
-					break
+					break // 遇到有一个不是 1，停止查找
 				}
 			}
 		notLast:
@@ -891,9 +910,10 @@ search:
 		}
 	}
 
-	if h.flags&hashWriting == 0 {
+	if h.flags&hashWriting == 0 { // 判断条件是否被其他写操作清理了
 		fatal("concurrent map writes")
 	}
+	// 清理标记
 	h.flags &^= hashWriting
 }
 
