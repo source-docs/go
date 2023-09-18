@@ -360,8 +360,10 @@ type maptype struct {
 	elem   *_type
 	bucket *_type // internal type representing a hash bucket
 	// function for hashing keys (ptr to key, seed) -> hash
-	hasher   func(unsafe.Pointer, uintptr) uintptr
-	keysize  uint8 // size of key slot
+	hasher func(unsafe.Pointer, uintptr) uintptr
+	// key 在 bmap 里面存储的大小
+	keysize uint8 // size of key slot
+	// element 在 bmap 里面存储的大小
 	elemsize uint8 // size of elem slot
 	// 桶的大小，单位 byte
 	bucketsize uint16 // size of bucket
@@ -379,6 +381,8 @@ func (mt *maptype) indirectkey() bool { // store ptr to key instead of key itsel
 func (mt *maptype) indirectelem() bool { // store ptr to elem instead of elem itself
 	return mt.flags&2 != 0
 }
+
+// key 是否是自反的，如果遇到 nan, 会出现 k != k
 func (mt *maptype) reflexivekey() bool { // true if k==k for all keys
 	return mt.flags&4 != 0
 }
