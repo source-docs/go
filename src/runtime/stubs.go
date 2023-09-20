@@ -95,6 +95,7 @@ func badsystemstack() {
 // memmove for more details.
 //
 // The (CPU-specific) implementations of this function are in memclr_*.s.
+// 清理一段没有堆指针的存储空间
 //
 //go:noescape
 func memclrNoHeapPointers(ptr unsafe.Pointer, n uintptr)
