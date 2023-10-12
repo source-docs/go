@@ -321,11 +321,17 @@ func (v Value) Kind() Kind {
 }
 
 // implemented in runtime:
+// func reflect_chanlen(c *hchan) int {
+// runtime/chan.go:728
 func chanlen(unsafe.Pointer) int
+
+// func reflectlite_maplen(h *hmap) int {
+// runtime/map.go:1635
 func maplen(unsafe.Pointer) int
 
 // Len returns v's length.
 // It panics if v's Kind is not Array, Chan, Map, Slice, or String.
+// 获取 Value 的长度
 func (v Value) Len() int {
 	k := v.kind()
 	switch k {

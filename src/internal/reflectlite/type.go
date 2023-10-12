@@ -149,18 +149,29 @@ const (
 //
 // rtype must be kept in sync with ../runtime/type.go:/^type._type.
 type rtype struct {
-	size       uintptr
-	ptrdata    uintptr // number of bytes in the type that can contain pointers
-	hash       uint32  // hash of type; avoids computation in hash tables
-	tflag      tflag   // extra type information flags
-	align      uint8   // alignment of variable with this type
-	fieldAlign uint8   // alignment of struct field with this type
-	kind       uint8   // enumeration for C
+	// 类型的大小
+	size uintptr
+	// 可包含指针的字节数
+	ptrdata uintptr // number of bytes in the type that can contain pointers
+	// 类型的哈希值，用于在哈希表中避免计算
+	hash uint32 // hash of type; avoids computation in hash tables
+	// 额外的类型信息标志
+	tflag tflag // extra type information flags
+	// 与该类型对应的变量的对齐方式
+	align uint8 // alignment of variable with this type
+	// 与该类型对应的结构字段的对齐方式
+	fieldAlign uint8 // alignment of struct field with this type
+	// type Kind uint 类型枚举
+	kind uint8 // enumeration for C
 	// function for comparing objects of this type
 	// (ptr to object A, ptr to object B) -> ==?
-	equal     func(unsafe.Pointer, unsafe.Pointer) bool
-	gcdata    *byte   // garbage collection data
-	str       nameOff // string form
+	// 用于比较该类型对象的函数
+	equal func(unsafe.Pointer, unsafe.Pointer) bool
+	// 垃圾回收数据
+	gcdata *byte // garbage collection data
+	// 类型的字符串形式
+	str nameOff // string form
+	// 指向该类型的指针类型，可能为零
 	ptrToThis typeOff // type for pointer to this type, may be zero
 }
 

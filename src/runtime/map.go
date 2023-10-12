@@ -342,6 +342,7 @@ func (h *hmap) newoverflow(t *maptype, b *bmap) *bmap {
 	return ovf
 }
 
+// 初始化 extra 的 overflow
 func (h *hmap) createOverflow() {
 	if h.extra == nil {
 		h.extra = new(mapextra)
