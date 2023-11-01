@@ -149,9 +149,18 @@ func mapclear(mapType *byte, hmap map[any]any)
 
 // *byte is really *runtime.Type
 func makechan64(chanType *byte, size int64) (hchan chan any)
+
+// runtime/chan.go:60 reflect_makechan
+// 对应 make(chan Type)
 func makechan(chanType *byte, size int) (hchan chan any)
+
+// runtime/chan.go:441 chanrecv1
+// 对应 x := <- c
 func chanrecv1(hchan <-chan any, elem *any)
 func chanrecv2(hchan <-chan any, elem *any) bool
+
+// runtime/chan.go:144  chansend1
+// 对应 ch <- 1
 func chansend1(hchan chan<- any, elem *any)
 func closechan(hchan any)
 
