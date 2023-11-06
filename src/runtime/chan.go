@@ -30,17 +30,18 @@ const (
 	debugChan = false
 )
 
+// channel 实现
 type hchan struct {
-	qcount   uint           // total data in the queue
-	dataqsiz uint           // size of the circular queue
+	qcount   uint           // total data in the queue queue 里面已经放入的元素数量
+	dataqsiz uint           // size of the circular make 时指定的 queue 缓冲大小
 	buf      unsafe.Pointer // points to an array of dataqsiz elements
-	elemsize uint16
-	closed   uint32
-	elemtype *_type // element type
-	sendx    uint   // send index
-	recvx    uint   // receive index
-	recvq    waitq  // list of recv waiters
-	sendq    waitq  // list of send waiters
+	elemsize uint16         // buf 里面的元素大小
+	closed   uint32         // == 0 代表 channel 未关闭
+	elemtype *_type         // element type  元素的类型信息
+	sendx    uint           // send index  chan 中已发送的索引位置
+	recvx    uint           // receive index 已接收的索引位置
+	recvq    waitq          // list of recv waiters  等待接收的 goroutine list
+	sendq    waitq          // list of send waiters等待发送的 goroutine list
 
 	// lock protects all fields in hchan, as well as several
 	// fields in sudogs blocked on this channel.
