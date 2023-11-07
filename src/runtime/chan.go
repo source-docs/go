@@ -34,7 +34,7 @@ const (
 type hchan struct {
 	qcount   uint           // total data in the queue queue 里面已经放入的元素数量
 	dataqsiz uint           // size of the circular make 时指定的 queue 缓冲大小
-	buf      unsafe.Pointer // points to an array of dataqsiz elements
+	buf      unsafe.Pointer // points to an array of dataqsiz elements  缓冲队列
 	elemsize uint16         // buf 里面的元素大小
 	closed   uint32         // == 0 代表 channel 未关闭
 	elemtype *_type         // element type  元素的类型信息
@@ -70,6 +70,7 @@ func makechan64(t *chantype, size int64) *hchan {
 	return makechan(t, int(size))
 }
 
+// 创建 chan
 func makechan(t *chantype, size int) *hchan {
 	elem := t.elem
 
@@ -81,6 +82,7 @@ func makechan(t *chantype, size int) *hchan {
 		throw("makechan: bad alignment")
 	}
 
+	// 检查当元素最多的时候，内存是否可以存储下
 	mem, overflow := math.MulUintptr(elem.size, uintptr(size))
 	if overflow || mem > maxAlloc-hchanSize || size < 0 {
 		panic(plainError("makechan: size out of range"))
@@ -97,12 +99,12 @@ func makechan(t *chantype, size int) *hchan {
 		c = (*hchan)(mallocgc(hchanSize, nil, true))
 		// Race detector uses this location for synchronization.
 		c.buf = c.raceaddr()
-	case elem.ptrdata == 0:
+	case elem.ptrdata == 0: // 不包含指针，直接分配一段包含 hchan 和 缓存队列 的连续空间
 		// Elements do not contain pointers.
 		// Allocate hchan and buf in one call.
 		c = (*hchan)(mallocgc(hchanSize+mem, nil, true))
 		c.buf = add(unsafe.Pointer(c), hchanSize)
-	default:
+	default: // 包含指针，分别分配 hchan 和 缓存队列 的空间
 		// Elements contain pointers.
 		c = new(hchan)
 		c.buf = mallocgc(mem, elem, true)

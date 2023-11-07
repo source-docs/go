@@ -14,6 +14,7 @@ package runtime
 
 import "unsafe"
 
+// new(T) 实际调用的函数 runtime/malloc.go:1252
 func newobject(typ *byte) *any
 func mallocgc(size uintptr, typ *byte, needszero bool) unsafe.Pointer
 func panicdivide()
