@@ -367,6 +367,8 @@ func goschedIfBusy() {
 // traces and heap dumps. Reasons should be unique and descriptive. Do not
 // re-use reasons, add new ones.
 // 挂起当前的 goroutine—— 把它变成 waiting 状态，并从调度器的运行队列中移除
+// unlockf 在和 m 解绑之后调用，此后 lock 被解锁， chan 可以操作栈了
+// reason go 被 pack 的原因
 func gopark(unlockf func(*g, unsafe.Pointer) bool, lock unsafe.Pointer, reason waitReason, traceEv byte, traceskip int) {
 	if reason != waitReasonSleep {
 		checkTimeouts() // timeouts may expire while two goroutines keep the scheduler busy
@@ -401,6 +403,8 @@ func goready(gp *g, traceskip int) {
 	})
 }
 
+// 取一个 sudog, 会优先从 p 缓存和全局缓存取，没有缓存则新建
+
 //go:nosplit
 func acquireSudog() *sudog {
 	// Delicate dance: the semaphore implementation calls
@@ -414,9 +418,11 @@ func acquireSudog() *sudog {
 	mp := acquirem()
 	pp := mp.p.ptr()
 	if len(pp.sudogcache) == 0 {
+		// 如果 p 的 sudog 缓存空了
 		lock(&sched.sudoglock)
 		// First, try to grab a batch from central cache.
 		for len(pp.sudogcache) < cap(pp.sudogcache)/2 && sched.sudogcache != nil {
+			// 从全局缓存里面取 p 缓存区容量的一半
 			s := sched.sudogcache
 			sched.sudogcache = s.next
 			s.next = nil
@@ -425,6 +431,7 @@ func acquireSudog() *sudog {
 		unlock(&sched.sudoglock)
 		// If the central cache is empty, allocate a new one.
 		if len(pp.sudogcache) == 0 {
+			// 如果全局缓存送空的，新建一个 sudog
 			pp.sudogcache = append(pp.sudogcache, new(sudog))
 		}
 	}
@@ -438,6 +445,8 @@ func acquireSudog() *sudog {
 	releasem(mp)
 	return s
 }
+
+// 将一个 sudog 放回缓冲区
 
 //go:nosplit
 func releaseSudog(s *sudog) {
@@ -463,10 +472,12 @@ func releaseSudog(s *sudog) {
 	if gp.param != nil {
 		throw("runtime: releaseSudog with non-nil gp.param")
 	}
+	// 禁止抢占
 	mp := acquirem() // avoid rescheduling to another P
 	pp := mp.p.ptr()
 	if len(pp.sudogcache) == cap(pp.sudogcache) {
 		// Transfer half of local cache to the central cache.
+		// 如果 p 的缓存区满了，copy 一半到全局缓存区
 		var first, last *sudog
 		for len(pp.sudogcache) > cap(pp.sudogcache)/2 {
 			n := len(pp.sudogcache)
@@ -485,7 +496,9 @@ func releaseSudog(s *sudog) {
 		sched.sudogcache = first
 		unlock(&sched.sudoglock)
 	}
+	// 放到 p 缓存区
 	pp.sudogcache = append(pp.sudogcache, s)
+	// 释放 m 锁
 	releasem(mp)
 }
 

@@ -38,8 +38,8 @@ type hchan struct {
 	elemsize uint16         // buf 里面的元素大小
 	closed   uint32         // == 0 代表 channel 未关闭
 	elemtype *_type         // element type  元素的类型信息
-	sendx    uint           // send index  chan 中已发送的索引位置
-	recvx    uint           // receive index 已接收的索引位置
+	sendx    uint           // send index  缓冲区下次发送的时候，缓存的位置，队列尾
+	recvx    uint           // receive index 缓冲区下次发送的时候，缓存的位置，队列头部
 	recvq    waitq          // list of recv waiters  等待接收的 goroutine list
 	sendq    waitq          // list of send waiters等待发送的 goroutine list
 
@@ -130,18 +130,24 @@ func chanbuf(c *hchan, i uint) unsafe.Pointer {
 // It uses a single word-sized read of mutable state, so although
 // the answer is instantaneously true, the correct answer may have changed
 // by the time the calling function receives the return value.
+// 判断当前 chan 是否已满，但是没加锁，可能不准
 func full(c *hchan) bool {
 	// c.dataqsiz is immutable (never written after the channel is created)
 	// so it is safe to read at any time during channel operation.
+	// c.dataqsiz 不会修改，不会出现缓存不一致，读取无需加锁
 	if c.dataqsiz == 0 {
+		// 如果无缓冲区
 		// Assumes that a pointer read is relaxed-atomic.
 		return c.recvq.first == nil
 	}
 	// Assumes that a uint read is relaxed-atomic.
+	// 当前数量达到
 	return c.qcount == c.dataqsiz
 }
 
 // entry point for c <- x from compiled code.
+// 向 channel 中发送数据
+// c <- x 调用的代码
 //
 //go:nosplit
 func chansend1(c *hchan, elem unsafe.Pointer) {
@@ -160,11 +166,15 @@ func chansend1(c *hchan, elem unsafe.Pointer) {
  * been closed.  it is easiest to loop and re-run
  * the operation; we'll see that it's now closed.
  */
+// 向 channel 中发送数据
+// block 表示发送数据已满是否阻塞，select 里面就可以不阻塞
+//
 func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 	if c == nil {
 		if !block {
 			return false
 		}
+		// 如果往 nil chan 发送数据，会永久阻塞
 		gopark(nil, nil, waitReasonChanSendNilChan, traceEvGoStop, 2)
 		throw("unreachable")
 	}
@@ -193,7 +203,11 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 	// channel wasn't closed during the first observation. However, nothing here
 	// guarantees forward progress. We rely on the side effects of lock release in
 	// chanrecv() and closechan() to update this thread's view of c.closed and full().
+
+	// 这个地方没有锁，可能发生在两个条件判断的中间被关闭，或者发生指令重排，但是都不影响正常逻辑
+	//
 	if !block && c.closed == 0 && full(c) {
+		// 如果非阻塞模式，并且 chan 没有关闭，并且已经满了
 		return false
 	}
 
@@ -204,24 +218,31 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 
 	lock(&c.lock)
 
+	// 加锁后进行准确判断
 	if c.closed != 0 {
+		// 写一个关闭的 chan
 		unlock(&c.lock)
 		panic(plainError("send on closed channel"))
 	}
 
+	// 尝试取一个等待接收数据的 g
 	if sg := c.recvq.dequeue(); sg != nil {
 		// Found a waiting receiver. We pass the value we want to send
 		// directly to the receiver, bypassing the channel buffer (if any).
+		// 如果存在等待的 g, 直接发送数据，不经过缓冲区
 		send(c, sg, ep, func() { unlock(&c.lock) }, 3)
 		return true
 	}
 
+	// 没有正在等待的 g, 并且缓冲区没满
 	if c.qcount < c.dataqsiz {
 		// Space is available in the channel buffer. Enqueue the element to send.
+		// qp = c.buf[c.sendx]
 		qp := chanbuf(c, c.sendx)
 		if raceenabled {
 			racenotify(c, c.sendx, nil)
 		}
+		// 存储到缓冲区
 		typedmemmove(c.elemtype, qp, ep)
 		c.sendx++
 		if c.sendx == c.dataqsiz {
@@ -238,6 +259,7 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 	}
 
 	// Block on the channel. Some receiver will complete our operation for us.
+	// 如果没有缓冲区或者已经满了，准备挂起当前 g
 	gp := getg()
 	mysg := acquireSudog()
 	mysg.releasetime = 0
@@ -253,17 +275,20 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 	mysg.c = c
 	gp.waiting = mysg
 	gp.param = nil
+	// 入队
 	c.sendq.enqueue(mysg)
 	// Signal to anyone trying to shrink our stack that we're about
 	// to park on a channel. The window between when this G's status
 	// changes and when we set gp.activeStackChans is not safe for
 	// stack shrinking.
+	// 防止栈移动或者复制，导致读写数据出问题
 	gp.parkingOnChan.Store(true)
 	gopark(chanparkcommit, unsafe.Pointer(&c.lock), waitReasonChanSend, traceEvGoBlockSend, 2)
 	// Ensure the value being sent is kept alive until the
 	// receiver copies it out. The sudog has a pointer to the
 	// stack object, but sudogs aren't considered as roots of the
 	// stack tracer.
+	// 保证 ep 不被回收， sudog 里面是 unsafe.Pointer 不会保证它不被回收
 	KeepAlive(ep)
 
 	// someone woke us up.
@@ -272,7 +297,7 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 	}
 	gp.waiting = nil
 	gp.activeStackChans = false
-	closed := !mysg.success
+	closed := !mysg.success // 是否是因为 chan 关闭叫醒的
 	gp.param = nil
 	if mysg.releasetime > 0 {
 		blockevent(mysg.releasetime-t0, 2)
@@ -335,6 +360,7 @@ func send(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
 // are not in the heap, so that will not help. We arrange to call
 // memmove and typeBitsBulkBarrier instead.
 
+// 直接发送数据到接收 g 的存储位置
 func sendDirect(t *_type, sg *sudog, src unsafe.Pointer) {
 	// src is on our stack, dst is a slot on another stack.
 
@@ -345,6 +371,7 @@ func sendDirect(t *_type, sg *sudog, src unsafe.Pointer) {
 	typeBitsBulkBarrier(t, uintptr(dst), uintptr(src), t.size)
 	// No need for cgo write barrier checks because dst is always
 	// Go memory.
+	// 将 src 数据复制到目标 g 的保存位置
 	memmove(dst, src, t.size)
 }
 
@@ -667,12 +694,14 @@ func chanparkcommit(gp *g, chanLock unsafe.Pointer) bool {
 	// Mark that it's safe for stack shrinking to occur now,
 	// because any thread acquiring this G's stack for shrinking
 	// is guaranteed to observe activeStackChans after this store.
+	// 栈可以收缩了
 	gp.parkingOnChan.Store(false)
 	// Make sure we unlock after setting activeStackChans and
 	// unsetting parkingOnChan. The moment we unlock chanLock
 	// we risk gp getting readied by a channel operation and
 	// so gp could continue running before everything before
 	// the unlock is visible (even to gp itself).
+	// chan 可以操作栈了
 	unlock((*mutex)(chanLock))
 	return true
 }

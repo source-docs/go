@@ -369,11 +369,11 @@ type sudog struct {
 	// channel this sudog is blocking on. shrinkstack depends on
 	// this for sudogs involved in channel ops.
 
-	g *g
+	g *g // 发送数据的 g
 
-	next *sudog
-	prev *sudog
-	elem unsafe.Pointer // data element (may point to stack)
+	next *sudog         // 链表下一个元素
+	prev *sudog         // 链表上一个元素
+	elem unsafe.Pointer // data element (may point to stack) 数据接收位置或者要发送的数据的位置
 
 	// The following fields are never accessed concurrently.
 	// For channels, waitlink is only accessed by g.
@@ -381,23 +381,23 @@ type sudog struct {
 	// are only accessed when holding a semaRoot lock.
 
 	acquiretime int64
-	releasetime int64
+	releasetime int64 // 记录接收到数据的释放时间
 	ticket      uint32
 
 	// isSelect indicates g is participating in a select, so
 	// g.selectDone must be CAS'd to win the wake-up race.
-	isSelect bool
+	isSelect bool // 当前 g 是否是在 select 里面
 
 	// success indicates whether communication over channel c
 	// succeeded. It is true if the goroutine was awoken because a
 	// value was delivered over channel c, and false if awoken
 	// because c was closed.
-	success bool
+	success bool // 是否成功接收到了数据，通道关闭也会唤醒 g， 但是该值为 false
 
 	parent   *sudog // semaRoot binary tree
 	waitlink *sudog // g.waiting list or semaRoot
 	waittail *sudog // semaRoot
-	c        *hchan // channel
+	c        *hchan // channel  // 关联的 chan
 }
 
 type libcall struct {
@@ -486,10 +486,12 @@ type g struct {
 	// pointing into this goroutine's stack. If true, stack
 	// copying needs to acquire channel locks to protect these
 	// areas of the stack.
+	// 有未解锁的 chan 在使用栈，如果需要复制栈，需要获取锁
 	activeStackChans bool
 	// parkingOnChan indicates that the goroutine is about to
 	// park on a chansend or chanrecv. Used to signal an unsafe point
 	// for stack shrinking.
+	// 该 g 是否正在 chan 上等待接受或者发送数据，防止在等待的时候栈被移动位置
 	parkingOnChan atomic.Bool
 
 	raceignore     int8     // ignore race detection events
@@ -508,10 +510,11 @@ type g struct {
 	sigcode1       uintptr
 	sigpc          uintptr
 	// 创建 g 的语句的 pc
-	gopc       uintptr         // pc of go statement that created this goroutine
-	ancestors  *[]ancestorInfo // ancestor information goroutine(s) that created this goroutine (only used if debug.tracebackancestors)
-	startpc    uintptr         // pc of goroutine function
-	racectx    uintptr
+	gopc      uintptr         // pc of go statement that created this goroutine
+	ancestors *[]ancestorInfo // ancestor information goroutine(s) that created this goroutine (only used if debug.tracebackancestors)
+	startpc   uintptr         // pc of goroutine function
+	racectx   uintptr
+	// waiting 当前 g 正在等待发送或者接收数据的 chan sudog
 	waiting    *sudog         // sudog structures this g is waiting on (that have a valid elem ptr); in lock order
 	cgoCtxt    []uintptr      // cgo traceback context
 	labels     unsafe.Pointer // profiler labels
@@ -701,7 +704,7 @@ type p struct {
 		n int32
 	}
 
-	sudogcache []*sudog
+	sudogcache []*sudog // chan 的 sudog 队列元素缓冲
 	sudogbuf   [128]*sudog
 
 	// Cache of mspan objects from the heap.

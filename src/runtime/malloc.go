@@ -1250,6 +1250,7 @@ func memclrNoHeapPointersChunked(size uintptr, x unsafe.Pointer) {
 // implementation of new builtin
 // compiler (both frontend and SSA backend) knows the signature
 // of this function.
+// new(T) 实际调用的函数
 func newobject(typ *_type) unsafe.Pointer {
 	return mallocgc(typ.size, typ, true)
 }
