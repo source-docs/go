@@ -364,6 +364,8 @@ type gobuf struct {
 //
 // sudogs are allocated from a special pool. Use acquireSudog and
 // releaseSudog to allocate and free them.
+// sudo 表示 pseudo （假的；冒充的；伪的）
+// sudog 是等待队列里面的 g
 type sudog struct {
 	// The following fields are protected by the hchan.lock of the
 	// channel this sudog is blocking on. shrinkstack depends on
@@ -394,7 +396,8 @@ type sudog struct {
 	// because c was closed.
 	success bool // 是否成功接收到了数据，通道关闭也会唤醒 g， 但是该值为 false
 
-	parent   *sudog // semaRoot binary tree
+	parent *sudog // semaRoot binary tree
+	// 链表的下一个节点
 	waitlink *sudog // g.waiting list or semaRoot
 	waittail *sudog // semaRoot
 	c        *hchan // channel  // 关联的 chan
@@ -458,6 +461,7 @@ type g struct {
 	//    stack may have moved in the meantime.
 	// 3. By debugCallWrap to pass parameters to a new goroutine because allocating a
 	//    closure in the runtime is forbidden.
+	// 唤醒时候的参数，是一个 sudog
 	param unsafe.Pointer
 	// g 的状态
 	atomicstatus atomic.Uint32
@@ -515,11 +519,12 @@ type g struct {
 	startpc   uintptr         // pc of goroutine function
 	racectx   uintptr
 	// waiting 当前 g 正在等待发送或者接收数据的 chan sudog
-	waiting    *sudog         // sudog structures this g is waiting on (that have a valid elem ptr); in lock order
-	cgoCtxt    []uintptr      // cgo traceback context
-	labels     unsafe.Pointer // profiler labels
-	timer      *timer         // cached timer for time.Sleep
-	selectDone atomic.Uint32  // are we participating in a select and did someone win the race?
+	waiting *sudog         // sudog structures this g is waiting on (that have a valid elem ptr); in lock order
+	cgoCtxt []uintptr      // cgo traceback context
+	labels  unsafe.Pointer // profiler labels
+	timer   *timer         // cached timer for time.Sleep
+	// 用来同步 g 在 select 里面的唤醒状态，唤醒成功会原子更新该值
+	selectDone atomic.Uint32 // are we participating in a select and did someone win the race?
 
 	// goroutineProfiled indicates the status of this goroutine's stack for the
 	// current in-progress goroutine profile

@@ -34,14 +34,15 @@ const (
 type hchan struct {
 	qcount   uint           // total data in the queue queue 里面已经放入的元素数量
 	dataqsiz uint           // size of the circular make 时指定的 queue 缓冲大小
-	buf      unsafe.Pointer // points to an array of dataqsiz elements  缓冲队列
-	elemsize uint16         // buf 里面的元素大小
-	closed   uint32         // == 0 代表 channel 未关闭
-	elemtype *_type         // element type  元素的类型信息
-	sendx    uint           // send index  缓冲区下次发送的时候，缓存的位置，队列尾
-	recvx    uint           // receive index 缓冲区下次发送的时候，缓存的位置，队列头部
-	recvq    waitq          // list of recv waiters  等待接收的 goroutine list
-	sendq    waitq          // list of send waiters等待发送的 goroutine list
+	buf      unsafe.Pointer // points to an array of dataqsiz elements
+	// 是指向循环队列的指针，循环队列是大小固定的用来存放chan接收的数据的队列；
+	elemsize uint16 // buf 循环队列里面的元素大小
+	closed   uint32 // == 0 代表 channel 未关闭
+	elemtype *_type // element type  循环队列里面的元素的类型信息
+	sendx    uint   // send index  循环队列缓冲区下次发送的时候，缓存的位置，队列尾
+	recvx    uint   // receive index 循环队列缓冲区下次接收的时候，缓存的位置，队列头部
+	recvq    waitq  // list of recv waiters  等待接收的 goroutine list
+	sendq    waitq  // list of send waiters 等待发送的 goroutine list
 
 	// lock protects all fields in hchan, as well as several
 	// fields in sudogs blocked on this channel.
@@ -49,9 +50,11 @@ type hchan struct {
 	// Do not change another G's status while holding this lock
 	// (in particular, do not ready a G), as this can deadlock
 	// with stack shrinking.
+	// 控制chan并发访问的互斥锁
 	lock mutex
 }
 
+// g 等待队列， 是一个双向链表
 type waitq struct {
 	first *sudog
 	last  *sudog
@@ -466,6 +469,8 @@ func empty(c *hchan) bool {
 }
 
 // entry points for <- c from compiled code.
+// <- c 的实现
+// 从
 //
 //go:nosplit
 func chanrecv1(c *hchan, elem unsafe.Pointer) {
@@ -496,6 +501,7 @@ func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool)
 		if !block {
 			return
 		}
+		// 从一个 nil chan 读取数据，永久阻塞
 		gopark(nil, nil, waitReasonChanReceiveNilChan, traceEvGoStop, 2)
 		throw("unreachable")
 	}
@@ -742,6 +748,8 @@ func selectnbsend(c *hchan, elem unsafe.Pointer) (selected bool) {
 //	} else {
 //		... bar
 //	}
+//
+// 通过 select 非阻塞读取 chan 的数据
 func selectnbrecv(elem unsafe.Pointer, c *hchan) (selected, received bool) {
 	return chanrecv(c, elem, false)
 }
@@ -785,31 +793,38 @@ func reflect_chanclose(c *hchan) {
 	closechan(c)
 }
 
+// sudog 入队，插入双向链表尾部
 func (q *waitq) enqueue(sgp *sudog) {
 	sgp.next = nil
 	x := q.last
 	if x == nil {
+		// 如果双向链表为空，构建双向链表
 		sgp.prev = nil
 		q.first = sgp
 		q.last = sgp
 		return
 	}
+	// 双向链表不为空，插入双向链表尾部
 	sgp.prev = x
 	x.next = sgp
 	q.last = sgp
 }
 
+// sudog 出队，从双向链表头部取一个
 func (q *waitq) dequeue() *sudog {
 	for {
 		sgp := q.first
 		if sgp == nil {
+			// 如果双向链表空了，返回 nil
 			return nil
 		}
 		y := sgp.next
 		if y == nil {
+			// 如果后面没有元素了，置空 first last
 			q.first = nil
 			q.last = nil
 		} else {
+			// 如果后面还有元素，置空元素  prev, 然后 first 指向这个元素
 			y.prev = nil
 			q.first = y
 			sgp.next = nil // mark as removed (see dequeueSudoG)
@@ -824,6 +839,8 @@ func (q *waitq) dequeue() *sudog {
 		// else has won the race to signal this goroutine but the goroutine
 		// hasn't removed itself from the queue yet.
 		if sgp.isSelect && !sgp.g.selectDone.CompareAndSwap(0, 1) {
+			// 如果这个 sudog 是在 select 里面的, 并且 g 在很短时间内被不同的 case 唤醒，
+			// 以 selectDone cas 地竞争，如果竞争失败，就是协程已经被其他 case 唤醒了， 尝试唤醒下一个协程
 			continue
 		}
 

@@ -325,10 +325,12 @@ func selectgo(cas0 *scase, order0 *uint16, pc0 *uintptr, nsends, nrecvs int, blo
 	// stack shrinking.
 	gp.parkingOnChan.Store(true)
 	gopark(selparkcommit, nil, waitReasonSelect, traceEvGoBlockSelect, 1)
+	// 被唤醒，解锁栈
 	gp.activeStackChans = false
 
 	sellock(scases, lockorder)
 
+	// 唤醒后重置 selectDone 标记
 	gp.selectDone.Store(0)
 	sg = (*sudog)(gp.param)
 	gp.param = nil
